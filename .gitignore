@@ -86,3 +86,10 @@ packages/*/dist
 # Release script
 scripts/sync-release-branch.sh
 /.vscode
+
+# Snyk Security Extension - AI Rules (auto-generated)
+.github/instructions/snyk_rules.instructions.md
+
+# GCP Service Account Keys
+*-key.json
+*-credentials.json

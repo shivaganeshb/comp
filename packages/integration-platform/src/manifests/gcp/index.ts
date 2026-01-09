@@ -1,10 +1,19 @@
 import type { IntegrationManifest } from '../../types';
+import {
+  alertingPoliciesCheck,
+  auditLogsCheck,
+  encryptionAtRestCheck,
+  firewallRulesCheck,
+  iamPolicyAnalysisCheck,
+  logSinksCheck,
+  serviceAccountKeysCheck,
+} from './checks';
 
 export const gcpManifest: IntegrationManifest = {
   id: 'gcp',
   name: 'Google Cloud Platform',
   description:
-    'Read-only monitoring of IAM access, alerting and cloud tests in Google Cloud Platform',
+    'SOC2 compliance monitoring for GCP: IAM policies, encryption, audit logs, alerting, firewall rules, and more.',
   category: 'Cloud',
   logoUrl:
     'https://img.logo.dev/cloud.google.com?token=pk_AZatYxV5QDSfWpRDaBxzRQ&format=png&retina=true',
@@ -16,7 +25,14 @@ export const gcpManifest: IntegrationManifest = {
     config: {
       authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
       tokenUrl: 'https://oauth2.googleapis.com/token',
-      scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+      scopes: [
+        'https://www.googleapis.com/auth/cloud-platform.read-only',
+        'https://www.googleapis.com/auth/compute.readonly',
+        'https://www.googleapis.com/auth/devstorage.read_only',
+        'https://www.googleapis.com/auth/logging.read',
+        'https://www.googleapis.com/auth/monitoring.read',
+        'https://www.googleapis.com/auth/sqlservice.admin',
+      ],
       pkce: false,
       clientAuthMethod: 'body',
       supportsRefreshToken: true,
@@ -37,19 +53,25 @@ export const gcpManifest: IntegrationManifest = {
 
 ---
 
-### About the Required Permissions
+### Required APIs
 
-**OAuth Scope:** This integration requires the \`cloud-platform\` scope to access Security Command Center findings.
+Enable these APIs in your GCP project:
+- Cloud Resource Manager API
+- Identity and Access Management (IAM) API
+- Compute Engine API
+- Cloud Storage API
+- Cloud Logging API
+- Cloud Monitoring API
+- Cloud SQL Admin API
 
-**Important:** While Google's consent screen will say "See, edit, configure and delete your Google Cloud data", this is the **only scope available** for Security Command Center API. Google does not offer a read-only alternative.
+### Required IAM Roles
 
-**Actual Access is Limited:** The OAuth scope just allows API calls. The real permissions are controlled by **IAM roles**. Users connecting their GCP account should only grant read-only IAM roles like:
-- Security Center Findings Viewer (\`roles/securitycenter.findingsViewer\`)
-- Viewer (\`roles/viewer\`)
+Grant the connecting user these read-only roles:
+- **Viewer** (\`roles/viewer\`) - Basic read access
+- **Security Reviewer** (\`roles/iam.securityReviewer\`) - IAM policy analysis
+- **Logs Viewer** (\`roles/logging.viewer\`) - Log sinks and metrics
 
-Even with the \`cloud-platform\` OAuth scope, **users can only perform actions their IAM roles allow**. Our integration only makes read-only API calls.
-
-This is industry standard - all GCP security monitoring tools use the same scope.`,
+These are read-only roles that allow compliance monitoring without modification access.`,
       createAppUrl: 'https://console.cloud.google.com/apis/credentials',
     },
   },
@@ -61,18 +83,35 @@ This is industry standard - all GCP security monitoring tools use the same scope
 
   capabilities: ['checks'],
 
-  // Integration-level variables (used by cloud security scanning)
+  // Integration-level variables (used by compliance checks)
   variables: [
     {
       id: 'organization_id',
       label: 'GCP Organization ID',
       type: 'text',
+      required: false,
+      helpText:
+        'Your GCP Organization ID (numeric). Find it at: console.cloud.google.com/iam-admin/settings. Required for org-level checks.',
+      placeholder: '123456789012',
+    },
+    {
+      id: 'project_id',
+      label: 'GCP Project ID',
+      type: 'text',
       required: true,
       helpText:
-        'Your GCP Organization ID (numeric). Find it at: console.cloud.google.com/iam-admin/settings',
-      placeholder: '123456789012',
+        'The GCP Project ID to monitor. Find it at: console.cloud.google.com/home/dashboard',
+      placeholder: 'my-project-id',
     },
   ],
 
-  checks: [],
+  checks: [
+    iamPolicyAnalysisCheck,
+    serviceAccountKeysCheck,
+    auditLogsCheck,
+    alertingPoliciesCheck,
+    encryptionAtRestCheck,
+    firewallRulesCheck,
+    logSinksCheck,
+  ],
 };
