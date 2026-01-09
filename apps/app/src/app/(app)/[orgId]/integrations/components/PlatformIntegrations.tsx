@@ -2,6 +2,7 @@
 
 import { ConnectIntegrationDialog } from '@/components/integrations/ConnectIntegrationDialog';
 import { ManageIntegrationDialog } from '@/components/integrations/ManageIntegrationDialog';
+import { OAuthSetupDialog } from '@/components/integrations/OAuthSetupDialog';
 import {
   ConnectionListItem,
   IntegrationProvider,
@@ -109,6 +110,21 @@ export function PlatformIntegrations({ className, taskTemplates }: PlatformInteg
   );
   const [relevantTasks, setRelevantTasks] = useState<RelevantTask[]>([]);
   const [isLoadingTasks, setIsLoadingTasks] = useState(false);
+
+  // OAuth Setup dialog state
+  const [oauthSetupDialogOpen, setOauthSetupDialogOpen] = useState(false);
+  const [oauthSetupProvider, setOauthSetupProvider] = useState<IntegrationProvider | null>(null);
+
+  const handleOpenOAuthSetup = (provider: IntegrationProvider) => {
+    setOauthSetupProvider(provider);
+    setOauthSetupDialogOpen(true);
+  };
+
+  const handleOAuthSetupSuccess = () => {
+    refreshConnections();
+    // Reload the page to get updated provider list with oauthConfigured=true
+    window.location.reload();
+  };
 
   const handleConnect = async (provider: IntegrationProvider) => {
     // For OAuth, redirect to authorization URL
@@ -543,8 +559,13 @@ export function PlatformIntegrations({ className, taskTemplates }: PlatformInteg
                             </Button>
                           </div>
                         ) : provider.authType === 'oauth2' && provider.oauthConfigured === false ? (
-                          <Button size="sm" variant="outline" className="w-full" disabled>
-                            Coming Soon
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="w-full"
+                            onClick={() => handleOpenOAuthSetup(provider)}
+                          >
+                            Setup OAuth
                           </Button>
                         ) : (
                           <Button
@@ -750,6 +771,21 @@ export function PlatformIntegrations({ className, taskTemplates }: PlatformInteg
           integrationName={connectingProviderInfo.name}
           integrationLogoUrl={connectingProviderInfo.logoUrl}
           onConnected={handleConnectDialogSuccess}
+        />
+      )}
+
+      {/* OAuth Setup Dialog */}
+      {oauthSetupProvider && (
+        <OAuthSetupDialog
+          open={oauthSetupDialogOpen}
+          onOpenChange={(open) => {
+            setOauthSetupDialogOpen(open);
+            if (!open) setOauthSetupProvider(null);
+          }}
+          providerSlug={oauthSetupProvider.id}
+          providerName={oauthSetupProvider.name}
+          providerLogoUrl={oauthSetupProvider.logoUrl}
+          onSuccess={handleOAuthSetupSuccess}
         />
       )}
 
