@@ -16,7 +16,9 @@ import { googleWorkspaceManifest } from '../manifests/google-workspace';
 import { manifest as jumpcloudManifest } from '../manifests/jumpcloud';
 import { rampManifest } from '../manifests/ramp';
 import { ripplingManifest } from '../manifests/rippling';
+import { slackManifest } from '../manifests/slack';
 import { vercelManifest } from '../manifests/vercel';
+import { jiraManifest } from '../manifests/jira';
 
 // ============================================================================
 // Registry Implementation
@@ -104,9 +106,11 @@ const allManifests: IntegrationManifest[] = [
   gcpManifest,
   githubManifest,
   googleWorkspaceManifest,
+  jiraManifest,
   jumpcloudManifest,
   ripplingManifest,
   rampManifest,
+  slackManifest,
   vercelManifest,
   aikidoManifest,
 ];

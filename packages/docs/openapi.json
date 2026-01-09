@@ -11491,6 +11491,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "organizationId",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -11884,6 +11892,37 @@
             "name": "connectionId",
             "required": true,
             "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Checks"
+        ]
+      }
+    },
+    "/v1/integrations/checks/connections/{connectionId}/history": {
+      "get": {
+        "operationId": "ChecksController_getConnectionCheckHistory_v1",
+        "parameters": [
+          {
+            "name": "connectionId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
             "schema": {
               "type": "string"
             }

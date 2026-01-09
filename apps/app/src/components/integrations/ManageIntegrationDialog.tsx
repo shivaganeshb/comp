@@ -20,11 +20,75 @@ import { Label } from '@comp/ui/label';
 import MultipleSelector from '@comp/ui/multiple-selector';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@comp/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@comp/ui/tabs';
-import { Key, Loader2, Settings, Trash2, Unplug, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Key,
+  Loader2,
+  Play,
+  Settings,
+  Trash2,
+  Unplug,
+  Zap,
+} from 'lucide-react';
 import Image from 'next/image';
 import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
+
+// Types for check results
+interface CheckFinding {
+  id: string;
+  title: string;
+  description: string;
+  severity: string;
+  resourceType: string;
+  resourceId: string;
+  remediation?: string;
+  passed: boolean;
+}
+
+interface CheckRun {
+  id: string;
+  checkName: string;
+  status: string;
+  passedCount: number;
+  failedCount: number;
+  createdAt: string;
+  completedAt?: string;
+  results: CheckFinding[];
+}
+
+interface CheckRunResponse {
+  connectionId: string;
+  providerSlug: string;
+  checkRunId: string;
+  results: Array<{
+    checkId: string;
+    checkName: string;
+    status: string;
+    result: {
+      findings: Array<{
+        title: string;
+        description?: string;
+        severity: string;
+        resourceType: string;
+        resourceId: string;
+        remediation?: string;
+      }>;
+      passingResults: Array<{
+        title: string;
+        description?: string;
+        resourceType: string;
+        resourceId: string;
+      }>;
+    };
+    durationMs: number;
+  }>;
+  totalFindings: number;
+  totalPassing: number;
+  durationMs: number;
+}
 
 interface CheckVariable {
   id: string;
@@ -52,15 +116,7 @@ interface VariablesResponse {
 interface CredentialField {
   id: string;
   label: string;
-  type:
-    | 'text'
-    | 'password'
-    | 'textarea'
-    | 'select'
-    | 'combobox'
-    | 'multi-select'
-    | 'number'
-    | 'url';
+  type: 'text' | 'password' | 'textarea' | 'select' | 'combobox' | 'number' | 'url';
   required: boolean;
   placeholder?: string;
   helpText?: string;
@@ -90,29 +146,10 @@ interface ManageIntegrationDialogProps {
     checkName: string;
     checkDescription?: string;
   };
+  onDisconnected?: () => void;
   onDeleted?: () => void;
   onSaved?: () => void;
 }
-
-const validateTargetRepos = (
-  values: Record<string, string | number | boolean | string[]>,
-): boolean => {
-  const targetReposValue = values.target_repos;
-  if (!Array.isArray(targetReposValue) || targetReposValue.length === 0) {
-    return true;
-  }
-  for (const value of targetReposValue) {
-    const colonIndex = String(value).lastIndexOf(':');
-    if (colonIndex <= 0) {
-      return false;
-    }
-    const branch = String(value).substring(colonIndex + 1).trim();
-    if (!branch) {
-      return false;
-    }
-  }
-  return true;
-};
 
 export function ManageIntegrationDialog({
   open,
@@ -123,11 +160,12 @@ export function ManageIntegrationDialog({
   integrationLogoUrl,
   configureOnly = false,
   checkContext,
+  onDisconnected,
   onDeleted,
   onSaved,
 }: ManageIntegrationDialogProps) {
   const { orgId } = useParams<{ orgId: string }>();
-  const { deleteConnection } = useIntegrationMutations();
+  const { disconnectConnection, deleteConnection } = useIntegrationMutations();
   const { refresh: refreshConnections } = useIntegrationConnections();
 
   // Variables state
@@ -144,16 +182,21 @@ export function ManageIntegrationDialog({
 
   // Credentials state (for custom auth integrations)
   const [credentialFields, setCredentialFields] = useState<CredentialField[]>([]);
-  const [credentialValues, setCredentialValues] = useState<
-    Record<string, string | string[]>
-  >({});
+  const [credentialValues, setCredentialValues] = useState<Record<string, string>>({});
   const [savingCredentials, setSavingCredentials] = useState(false);
   const [authStrategy, setAuthStrategy] = useState<string>('');
 
   // Tab state
-  const [activeTab, setActiveTab] = useState<'variables' | 'credentials'>('variables');
+  const [activeTab, setActiveTab] = useState<'variables' | 'credentials' | 'checks'>('variables');
+
+  // Check results state
+  const [lastCheckRun, setLastCheckRun] = useState<CheckRun | null>(null);
+  const [loadingChecks, setLoadingChecks] = useState(false);
+  const [runningChecks, setRunningChecks] = useState(false);
+  const [hasChecks, setHasChecks] = useState(false);
 
   // Action states
+  const [disconnecting, setDisconnecting] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   // Fetch connection details (for credential fields)
@@ -168,9 +211,9 @@ export function ManageIntegrationDialog({
         setAuthStrategy(response.data.authStrategy || '');
         setCredentialFields(response.data.credentialFields || []);
         // Initialize empty credential values (we don't show existing values for security)
-        const initialValues: Record<string, string | string[]> = {};
+        const initialValues: Record<string, string> = {};
         for (const field of response.data.credentialFields || []) {
-          initialValues[field.id] = field.type === 'multi-select' ? [] : '';
+          initialValues[field.id] = '';
         }
         setCredentialValues(initialValues);
       }
@@ -178,6 +221,66 @@ export function ManageIntegrationDialog({
       // Silently fail - credential editing may not be available
     }
   }, [connectionId, orgId]);
+
+  // Fetch last check run results
+  const loadCheckResults = useCallback(async () => {
+    if (!connectionId || !orgId) return;
+
+    setLoadingChecks(true);
+    try {
+      // First check if this integration has checks
+      const checksResponse = await api.get<{ checks: Array<{ id: string; name: string }> }>(
+        `/v1/integrations/checks/connections/${connectionId}`,
+      );
+
+      const checksAvailable = checksResponse.data?.checks && checksResponse.data.checks.length > 0;
+      setHasChecks(checksAvailable);
+
+      if (!checksAvailable) {
+        setLoadingChecks(false);
+        return;
+      }
+
+      // Fetch last check run
+      const response = await api.get<{ checkRuns: CheckRun[] }>(
+        `/v1/integrations/checks/connections/${connectionId}/history?limit=1`,
+      );
+
+      if (response.data?.checkRuns?.[0]) {
+        setLastCheckRun(response.data.checkRuns[0]);
+      }
+    } catch {
+      // Silently fail - check results may not be available
+      console.log('Failed to load check results');
+    } finally {
+      setLoadingChecks(false);
+    }
+  }, [connectionId, orgId]);
+
+  // Run checks
+  const handleRunChecks = useCallback(async () => {
+    if (!connectionId || !orgId) return;
+
+    setRunningChecks(true);
+    try {
+      const response = await api.post<CheckRunResponse>(
+        `/v1/integrations/checks/connections/${connectionId}/run`,
+        {},
+      );
+
+      if (response.data) {
+        toast.success(`Checks completed: ${response.data.totalPassing} passing, ${response.data.totalFindings} findings`);
+        // Reload check results
+        await loadCheckResults();
+      } else if (response.error) {
+        toast.error(response.error);
+      }
+    } catch {
+      toast.error('Failed to run checks');
+    } finally {
+      setRunningChecks(false);
+    }
+  }, [connectionId, orgId, loadCheckResults]);
 
   // Fetch variables when dialog opens
   const loadVariables = useCallback(async () => {
@@ -212,10 +315,11 @@ export function ManageIntegrationDialog({
     if (open && connectionId) {
       loadVariables();
       loadConnectionDetails();
+      loadCheckResults();
       // Set initial tab based on what's available
       setActiveTab('variables');
     }
-  }, [open, connectionId, loadVariables, loadConnectionDetails]);
+  }, [open, connectionId, loadVariables, loadConnectionDetails, loadCheckResults]);
 
   const fetchDynamicOptions = useCallback(
     async (variableId: string) => {
@@ -261,22 +365,16 @@ export function ManageIntegrationDialog({
     if (!connectionId || !orgId) return;
 
     // Check if any credentials were actually entered
-    const hasValues = Object.values(credentialValues).some((value) =>
-      Array.isArray(value) ? value.length > 0 : value.trim() !== '',
-    );
+    const hasValues = Object.values(credentialValues).some((v) => v.trim() !== '');
     if (!hasValues) {
       toast.error('Please enter at least one credential value to update');
       return;
     }
 
     // Only send non-empty values
-    const credentialsToSave: Record<string, string | string[]> = {};
+    const credentialsToSave: Record<string, string> = {};
     for (const [key, value] of Object.entries(credentialValues)) {
-      if (Array.isArray(value)) {
-        if (value.length > 0) {
-          credentialsToSave[key] = value;
-        }
-      } else if (value.trim()) {
+      if (value.trim()) {
         credentialsToSave[key] = value.trim();
       }
     }
@@ -291,9 +389,9 @@ export function ManageIntegrationDialog({
       refreshConnections();
       // Clear the form
       setCredentialValues((prev) => {
-        const cleared: Record<string, string | string[]> = {};
+        const cleared: Record<string, string> = {};
         for (const key of Object.keys(prev)) {
-          cleared[key] = Array.isArray(prev[key]) ? [] : '';
+          cleared[key] = '';
         }
         return cleared;
       });
@@ -302,6 +400,27 @@ export function ManageIntegrationDialog({
       toast.error('Failed to update credentials');
     } finally {
       setSavingCredentials(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (!connectionId) return;
+
+    setDisconnecting(true);
+    try {
+      const result = await disconnectConnection(connectionId);
+      if (result.success) {
+        toast.success('Integration disconnected');
+        onOpenChange(false);
+        refreshConnections();
+        onDisconnected?.();
+      } else {
+        toast.error(result.error || 'Failed to disconnect');
+      }
+    } catch {
+      toast.error('Failed to disconnect');
+    } finally {
+      setDisconnecting(false);
     }
   };
 
@@ -332,16 +451,13 @@ export function ManageIntegrationDialog({
     setVariables([]);
     setVariableValues({});
     setDynamicOptions({});
+    setLastCheckRun(null);
+    setHasChecks(false);
   };
-
-  const hasVariables = variables.length > 0;
-  const hasCredentials = authStrategy === 'custom' && credentialFields.length > 0;
-  const showTabs = hasVariables && hasCredentials;
-  const isTargetReposValid = validateTargetRepos(variableValues);
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="max-w-lg max-h-[85vh] flex flex-col">
+      <DialogContent className="max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-background border border-border flex items-center justify-center overflow-hidden">
@@ -367,63 +483,71 @@ export function ManageIntegrationDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          {loadingVariables ? (
-            <div className="py-8 flex items-center justify-center">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
-          ) : (
-            <ConfigurationContent
-              variables={variables}
-              variableValues={variableValues}
-              setVariableValues={setVariableValues}
-              dynamicOptions={dynamicOptions}
-              loadingDynamicOptions={loadingDynamicOptions}
-              fetchDynamicOptions={fetchDynamicOptions}
-              credentialFields={credentialFields}
-              credentialValues={credentialValues}
-              setCredentialValues={setCredentialValues}
-              hasVariables={hasVariables}
-              hasCredentials={hasCredentials}
-              showTabs={showTabs}
-              activeTab={activeTab}
-              setActiveTab={setActiveTab}
-            />
-          )}
-        </div>
-
-        {!loadingVariables && (
-          <ConfigurationFooterActions
-            hasVariables={hasVariables}
-            hasCredentials={hasCredentials}
-            showTabs={showTabs}
-            activeTab={activeTab}
+        {loadingVariables ? (
+          <div className="py-8 flex items-center justify-center">
+            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+          </div>
+        ) : (
+          <ConfigurationContent
+            variables={variables}
+            variableValues={variableValues}
+            setVariableValues={setVariableValues}
+            dynamicOptions={dynamicOptions}
+            loadingDynamicOptions={loadingDynamicOptions}
+            fetchDynamicOptions={fetchDynamicOptions}
             savingVariables={savingVariables}
             handleSaveVariables={handleSaveVariables}
-            isTargetReposValid={isTargetReposValid}
+            credentialFields={credentialFields}
+            credentialValues={credentialValues}
+            setCredentialValues={setCredentialValues}
             savingCredentials={savingCredentials}
             handleSaveCredentials={handleSaveCredentials}
-            showActionsFooter={!configureOnly}
+            authStrategy={authStrategy}
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
+            hasChecks={hasChecks}
+            lastCheckRun={lastCheckRun}
+            loadingChecks={loadingChecks}
+            runningChecks={runningChecks}
+            handleRunChecks={handleRunChecks}
           />
         )}
 
         {!configureOnly && (
           <DialogFooter className="flex-col sm:flex-row gap-2 border-t pt-4">
             <Button
-              variant="destructive"
-              onClick={handleDelete}
-              disabled={deleting}
+              variant="outline"
+              onClick={handleDisconnect}
+              disabled={disconnecting || deleting}
               className="flex-1"
             >
-              {deleting ? (
+              {disconnecting ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                   Disconnecting...
                 </>
               ) : (
                 <>
-                  <Trash2 className="h-4 w-4 mr-2" />
+                  <Unplug className="h-4 w-4 mr-2" />
                   Disconnect
+                </>
+              )}
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={disconnecting || deleting}
+              className="flex-1"
+            >
+              {deleting ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Removing...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Remove
                 </>
               )}
             </Button>
@@ -434,7 +558,7 @@ export function ManageIntegrationDialog({
   );
 }
 
-// Configuration content with tabs for variables and credentials
+// Configuration content with tabs for variables, credentials, and checks
 function ConfigurationContent({
   variables,
   variableValues,
@@ -442,14 +566,21 @@ function ConfigurationContent({
   dynamicOptions,
   loadingDynamicOptions,
   fetchDynamicOptions,
+  savingVariables,
+  handleSaveVariables,
   credentialFields,
   credentialValues,
   setCredentialValues,
-  hasVariables,
-  hasCredentials,
-  showTabs,
+  savingCredentials,
+  handleSaveCredentials,
+  authStrategy,
   activeTab,
   setActiveTab,
+  hasChecks,
+  lastCheckRun,
+  loadingChecks,
+  runningChecks,
+  handleRunChecks,
 }: {
   variables: CheckVariable[];
   variableValues: Record<string, string | number | boolean | string[]>;
@@ -459,17 +590,28 @@ function ConfigurationContent({
   dynamicOptions: Record<string, { value: string; label: string }[]>;
   loadingDynamicOptions: Record<string, boolean>;
   fetchDynamicOptions: (variableId: string) => void;
+  savingVariables: boolean;
+  handleSaveVariables: () => void;
   credentialFields: CredentialField[];
-  credentialValues: Record<string, string | string[]>;
-  setCredentialValues: React.Dispatch<React.SetStateAction<Record<string, string | string[]>>>;
-  hasVariables: boolean;
-  hasCredentials: boolean;
-  showTabs: boolean;
-  activeTab: 'variables' | 'credentials';
-  setActiveTab: (tab: 'variables' | 'credentials') => void;
+  credentialValues: Record<string, string>;
+  setCredentialValues: React.Dispatch<React.SetStateAction<Record<string, string>>>;
+  savingCredentials: boolean;
+  handleSaveCredentials: () => void;
+  authStrategy: string;
+  activeTab: 'variables' | 'credentials' | 'checks';
+  setActiveTab: (tab: 'variables' | 'credentials' | 'checks') => void;
+  hasChecks: boolean;
+  lastCheckRun: CheckRun | null;
+  loadingChecks: boolean;
+  runningChecks: boolean;
+  handleRunChecks: () => void;
 }) {
-  // If neither available, show empty state
-  if (!hasVariables && !hasCredentials) {
+  const hasVariables = variables.length > 0;
+  const hasCredentials = authStrategy === 'custom' && credentialFields.length > 0;
+  const showTabs = hasVariables || hasCredentials || hasChecks;
+
+  // If nothing available, show empty state
+  if (!hasVariables && !hasCredentials && !hasChecks) {
     return (
       <p className="text-sm text-muted-foreground text-center py-4">
         This integration is fully configured and ready to use.
@@ -501,7 +643,7 @@ function ConfigurationContent({
             )}
 
             {variable.type === 'multi-select' ? (
-              <MultiSelectWithBranches
+              <MultiSelectVariable
                 variable={variable}
                 options={options}
                 isLoadingOptions={isLoadingOptions}
@@ -584,6 +726,17 @@ function ConfigurationContent({
           </div>
         );
       })}
+
+      <Button onClick={handleSaveVariables} disabled={savingVariables} className="w-full">
+        {savingVariables ? (
+          <>
+            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            Saving...
+          </>
+        ) : (
+          'Save Configuration'
+        )}
+      </Button>
     </div>
   );
 
@@ -617,46 +770,11 @@ function ConfigurationContent({
             {field.required && <span className="text-muted-foreground ml-1">(required)</span>}
           </Label>
           {field.helpText && <p className="text-xs text-muted-foreground">{field.helpText}</p>}
-          {field.type === 'multi-select' ? (
-            (() => {
-              const selectedValues: string[] = Array.isArray(credentialValues[field.id])
-                ? (credentialValues[field.id] as string[])
-                : [];
-              return (
-                <MultipleSelector
-                  value={selectedValues.map((val: string) => ({
-                    value: val,
-                    label: field.options?.find((opt) => opt.value === val)?.label || val,
-                  }))}
-                  onChange={(selected) =>
-                    setCredentialValues((prev) => ({
-                      ...prev,
-                      [field.id]: selected.map((item) => item.value),
-                    }))
-                  }
-                  defaultOptions={(field.options || []).map((opt) => ({
-                    value: opt.value,
-                    label: opt.label,
-                  }))}
-                  options={(field.options || []).map((opt) => ({
-                    value: opt.value,
-                    label: opt.label,
-                  }))}
-                  placeholder={field.placeholder || `Select ${field.label.toLowerCase()}`}
-                  creatable={!field.options || field.options.length === 0}
-                  emptyIndicator={
-                    <p className="text-center text-sm text-muted-foreground">No options</p>
-                  }
-                />
-              );
-            })()
-          ) : field.type === 'textarea' ? (
+          {field.type === 'textarea' ? (
             <textarea
               id={`cred-${field.id}`}
               placeholder={field.placeholder || `Enter new ${field.label.toLowerCase()}`}
-              value={
-                typeof credentialValues[field.id] === 'string' ? credentialValues[field.id] : ''
-              }
+              value={credentialValues[field.id] || ''}
               onChange={(e) =>
                 setCredentialValues((prev) => ({ ...prev, [field.id]: e.target.value }))
               }
@@ -668,16 +786,13 @@ function ConfigurationContent({
                 id: opt.value,
                 label: opt.label,
               }));
-              const currentValue: string =
-                typeof credentialValues[field.id] === 'string'
-                  ? (credentialValues[field.id] as string)
-                  : '';
+              const currentValue = credentialValues[field.id];
               // Find existing item or create synthetic one for custom values
               const selectedItem = currentValue
-                ? (items.find((item) => item.id === currentValue) ?? {
+                ? items.find((item) => item.id === currentValue) ?? {
                     id: currentValue,
                     label: currentValue,
-                  })
+                  }
                 : undefined;
               return (
                 <ComboboxDropdown
@@ -701,18 +816,10 @@ function ConfigurationContent({
               );
             })()
           ) : field.type === 'select' && field.options ? (
-            (() => {
-              const stringValue: string =
-                typeof credentialValues[field.id] === 'string'
-                  ? (credentialValues[field.id] as string)
-                  : '';
-              return (
-                <Select
-                  value={stringValue}
-                  onValueChange={(val) =>
-                    setCredentialValues((prev) => ({ ...prev, [field.id]: val }))
-                  }
-                >
+            <Select
+              value={credentialValues[field.id] || ''}
+              onValueChange={(val) => setCredentialValues((prev) => ({ ...prev, [field.id]: val }))}
+            >
               <SelectTrigger>
                 <SelectValue placeholder={`Select ${field.label.toLowerCase()}`} />
               </SelectTrigger>
@@ -723,17 +830,13 @@ function ConfigurationContent({
                   </SelectItem>
                 ))}
               </SelectContent>
-                </Select>
-              );
-            })()
+            </Select>
           ) : (
             <Input
               id={`cred-${field.id}`}
               type={field.type === 'password' ? 'password' : 'text'}
               placeholder={field.placeholder || `Enter new ${field.label.toLowerCase()}`}
-              value={
-                typeof credentialValues[field.id] === 'string' ? credentialValues[field.id] : ''
-              }
+              value={credentialValues[field.id] || ''}
               onChange={(e) =>
                 setCredentialValues((prev) => ({ ...prev, [field.id]: e.target.value }))
               }
@@ -741,140 +844,182 @@ function ConfigurationContent({
           )}
         </div>
       ))}
+
+      <Button onClick={handleSaveCredentials} disabled={savingCredentials} className="w-full">
+        {savingCredentials ? (
+          <>
+            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            Updating...
+          </>
+        ) : (
+          'Update Credentials'
+        )}
+      </Button>
     </div>
   );
 
-  // Show tabs if both are available
-  if (showTabs) {
+  const checksContent = hasChecks && (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h4 className="text-sm font-medium">Security Checks</h4>
+        <Button
+          onClick={handleRunChecks}
+          disabled={runningChecks}
+          size="sm"
+          variant="outline"
+        >
+          {runningChecks ? (
+            <>
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              Running...
+            </>
+          ) : (
+            <>
+              <Play className="h-4 w-4 mr-2" />
+              Run Checks
+            </>
+          )}
+        </Button>
+      </div>
+
+      {loadingChecks ? (
+        <div className="py-4 flex items-center justify-center">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        </div>
+      ) : lastCheckRun ? (
+        <div className="space-y-3">
+          <div className="rounded-md bg-muted/50 border border-border p-3 space-y-2">
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">Last run:</span>
+              <span>{new Date(lastCheckRun.createdAt).toLocaleString()}</span>
+            </div>
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-1.5">
+                <CheckCircle2 className="h-4 w-4 text-green-600" />
+                <span className="text-sm font-medium">{lastCheckRun.passedCount} passing</span>
+              </div>
+              {lastCheckRun.failedCount > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <AlertTriangle className="h-4 w-4 text-amber-600" />
+                  <span className="text-sm font-medium">{lastCheckRun.failedCount} findings</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {lastCheckRun.results && lastCheckRun.results.length > 0 && (
+            <div className="space-y-2">
+              <h5 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Results
+              </h5>
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {lastCheckRun.results.map((result) => (
+                  <div
+                    key={result.id}
+                    className={`rounded-md border p-3 text-sm ${
+                      result.passed
+                        ? 'bg-green-50 border-green-200 dark:bg-green-950/30 dark:border-green-900'
+                        : 'bg-amber-50 border-amber-200 dark:bg-amber-950/30 dark:border-amber-900'
+                    }`}
+                  >
+                    <div className="flex items-start gap-2">
+                      {result.passed ? (
+                        <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
+                      ) : (
+                        <AlertTriangle className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
+                      )}
+                      <div className="min-w-0">
+                        <p className="font-medium">{result.title}</p>
+                        {result.description && (
+                          <p className="text-muted-foreground text-xs mt-1">{result.description}</p>
+                        )}
+                        {result.remediation && !result.passed && (
+                          <p className="text-xs mt-2">
+                            <span className="font-medium">Fix: </span>
+                            {result.remediation}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="rounded-md bg-muted/50 border border-border p-4 text-center">
+          <p className="text-sm text-muted-foreground">
+            No checks have been run yet. Click "Run Checks" to analyze your integration.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+
+  // Calculate which tabs to show
+  const availableTabs: Array<{ id: string; label: string; icon: React.ReactNode; content: React.ReactNode }> = [];
+  if (hasVariables) {
+    availableTabs.push({
+      id: 'variables',
+      label: 'Settings',
+      icon: <Settings className="h-4 w-4" />,
+      content: variablesContent,
+    });
+  }
+  if (hasCredentials) {
+    availableTabs.push({
+      id: 'credentials',
+      label: 'Credentials',
+      icon: <Key className="h-4 w-4" />,
+      content: credentialsContent,
+    });
+  }
+  if (hasChecks) {
+    availableTabs.push({
+      id: 'checks',
+      label: 'Checks',
+      icon: <Zap className="h-4 w-4" />,
+      content: checksContent,
+    });
+  }
+
+  // Show tabs if multiple content sections are available
+  if (availableTabs.length > 1) {
+    // Ensure activeTab is valid
+    const validActiveTab = availableTabs.find((t) => t.id === activeTab) ? activeTab : availableTabs[0].id;
+
     return (
-      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'variables' | 'credentials')}>
-        <TabsList className="grid w-full grid-cols-2">
-          <TabsTrigger value="variables" className="gap-2">
-            <Settings className="h-4 w-4" />
-            Settings
-          </TabsTrigger>
-          <TabsTrigger value="credentials" className="gap-2">
-            <Key className="h-4 w-4" />
-            Credentials
-          </TabsTrigger>
+      <Tabs
+        value={validActiveTab}
+        onValueChange={(v) => setActiveTab(v as 'variables' | 'credentials' | 'checks')}
+      >
+        <TabsList
+          className="grid w-full"
+          style={{ gridTemplateColumns: `repeat(${availableTabs.length}, 1fr)` }}
+        >
+          {availableTabs.map((tab) => (
+            <TabsTrigger key={tab.id} value={tab.id} className="gap-2">
+              {tab.icon}
+              {tab.label}
+            </TabsTrigger>
+          ))}
         </TabsList>
-        <TabsContent value="variables" className="mt-4">
-          {variablesContent}
-        </TabsContent>
-        <TabsContent value="credentials" className="mt-4">
-          {credentialsContent}
-        </TabsContent>
+        {availableTabs.map((tab) => (
+          <TabsContent key={tab.id} value={tab.id} className="mt-4">
+            {tab.content}
+          </TabsContent>
+        ))}
       </Tabs>
     );
   }
 
-  // Show only what's available
-  return <div className="space-y-4">{variablesContent || credentialsContent}</div>;
+  // Show only what's available (single content)
+  return <div className="space-y-4">{availableTabs[0]?.content}</div>;
 }
 
-function ConfigurationFooterActions({
-  hasVariables,
-  hasCredentials,
-  showTabs,
-  activeTab,
-  savingVariables,
-  handleSaveVariables,
-  isTargetReposValid,
-  savingCredentials,
-  handleSaveCredentials,
-  showActionsFooter,
-}: {
-  hasVariables: boolean;
-  hasCredentials: boolean;
-  showTabs: boolean;
-  activeTab: 'variables' | 'credentials';
-  savingVariables: boolean;
-  handleSaveVariables: () => void;
-  isTargetReposValid: boolean;
-  savingCredentials: boolean;
-  handleSaveCredentials: () => void;
-  showActionsFooter: boolean;
-}) {
-  if (!hasVariables && !hasCredentials) {
-    return null;
-  }
-
-  const showVariablesButton = hasVariables && (!showTabs || activeTab === 'variables');
-  const showCredentialsButton = hasCredentials && (!showTabs || activeTab === 'credentials');
-  const footerClassName = showActionsFooter ? 'pt-4' : 'border-t pt-4';
-
-  return (
-    <div className={footerClassName}>
-      {showVariablesButton && (
-        <Button
-          onClick={handleSaveVariables}
-          disabled={savingVariables || !isTargetReposValid}
-          className="w-full"
-        >
-          {savingVariables ? (
-            <>
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              Saving...
-            </>
-          ) : (
-            'Save Configuration'
-          )}
-        </Button>
-      )}
-      {showCredentialsButton && (
-        <Button onClick={handleSaveCredentials} disabled={savingCredentials} className="w-full">
-          {savingCredentials ? (
-            <>
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              Updating...
-            </>
-          ) : (
-            'Update Credentials'
-          )}
-        </Button>
-      )}
-    </div>
-  );
-}
-
-/**
- * Parse a stored value like "owner/repo:branch" into parts.
- * Handles trailing colons, empty branches, and non-string values.
- */
-const parseRepoBranch = (value: unknown): { repo: string; branch: string } => {
-  // Safely convert to string to handle corrupted/migrated data
-  const stringValue = String(value ?? '');
-  // Remove trailing colon if present
-  const cleanValue = stringValue.endsWith(':') ? stringValue.slice(0, -1) : stringValue;
-  const colonIndex = cleanValue.lastIndexOf(':');
-
-  if (colonIndex > 0 && colonIndex < cleanValue.length - 1) {
-    return {
-      repo: cleanValue.substring(0, colonIndex),
-      branch: cleanValue.substring(colonIndex + 1),
-    };
-  }
-  // No branch specified - return empty string so user can type
-  return { repo: cleanValue, branch: '' };
-};
-
-/**
- * Format repo and branch into stored format.
- * If branch is empty, just store the repo (will default to main on parse).
- */
-const formatRepoBranch = (repo: string, branch: string): string => {
-  const trimmedBranch = branch.trim();
-  if (!trimmedBranch) {
-    return repo; // No colon when branch is empty
-  }
-  return `${repo}:${trimmedBranch}`;
-};
-
-/**
- * Multi-select with optional branch inputs for GitHub repos.
- * When variable.id is 'target_repos', shows branch input for each selected repo.
- */
-function MultiSelectWithBranches({
+// Helper component for multi-select variables with lazy loading
+function MultiSelectVariable({
   variable,
   options,
   isLoadingOptions,
@@ -892,10 +1037,6 @@ function MultiSelectWithBranches({
   const selectedValues = Array.isArray(value) ? value : [];
   const hasLoadedRef = useRef(false);
 
-  // For target_repos, parse values to extract repos and branches
-  const isGitHubRepos = variable.id === 'target_repos';
-  const parsedConfigs = isGitHubRepos ? selectedValues.map(parseRepoBranch) : [];
-
   useEffect(() => {
     if (
       variable.hasDynamicOptions &&
@@ -906,109 +1047,28 @@ function MultiSelectWithBranches({
       hasLoadedRef.current = true;
       onLoadOptions();
     }
-  }, [variable.hasDynamicOptions, options.length, isLoadingOptions, onLoadOptions]);
-
-  // Handle repo selection change
-  const handleRepoSelectionChange = (selectedRepos: string[]) => {
-    if (!isGitHubRepos) {
-      onChange(selectedRepos);
-      return;
-    }
-
-    // For GitHub repos, preserve existing branches when repos are reselected
-    const newValues = selectedRepos.map((repo) => {
-      // Check if this repo already exists in current values
-      const existing = parsedConfigs.find((c) => c.repo === repo);
-      // Use existing branch, or empty string for new repos (user will type it)
-      return formatRepoBranch(repo, existing?.branch || '');
-    });
-    onChange(newValues);
-  };
-
-  // Handle branch change for a specific repo
-  const handleBranchChange = (repo: string, branch: string) => {
-    const newValues = selectedValues.map((v) => {
-      const parsed = parseRepoBranch(v);
-      if (parsed.repo === repo) {
-        // Allow empty string during editing - will default to main on save if empty
-        return formatRepoBranch(repo, branch);
-      }
-      return v;
-    });
-    onChange(newValues);
-  };
-
-  // Handle removing a repo
-  const handleRemoveRepo = (repo: string) => {
-    const newValues = selectedValues.filter((v) => parseRepoBranch(v).repo !== repo);
-    onChange(newValues);
-  };
-
-  // Get repos from values for display in multi-select
-  const reposForSelector = isGitHubRepos ? parsedConfigs.map((c) => c.repo) : selectedValues;
+  }, []);
 
   return (
-    <div className="space-y-3">
-      <MultipleSelector
-        value={reposForSelector.map((v) => ({
-          value: v,
-          label: options.find((o) => o.value === v)?.label || v,
-        }))}
-        onChange={(selected) => handleRepoSelectionChange(selected.map((s) => s.value))}
-        defaultOptions={options.map((o) => ({ value: o.value, label: o.label }))}
-        options={options.map((o) => ({ value: o.value, label: o.label }))}
-        placeholder={`Select ${variable.label.toLowerCase()}...`}
-        emptyIndicator={
-          isLoadingOptions ? (
-            <div className="flex items-center gap-2 py-2 px-3 text-sm text-muted-foreground">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              Loading options...
-            </div>
-          ) : (
-            <p className="text-center text-sm text-muted-foreground">No options available</p>
-          )
-        }
-      />
-
-      {/* Branch inputs for GitHub repos */}
-      {isGitHubRepos && parsedConfigs.length > 0 && (
-        <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3">
-          <p className="text-xs font-medium text-muted-foreground">
-            Specify branches for each repository (comma-separated for multiple):
-          </p>
-          {parsedConfigs.map((config) => {
-            const isEmpty = !config.branch.trim();
-            return (
-              <div key={config.repo} className="flex items-center gap-2">
-                <span className="shrink-0 rounded bg-secondary px-2 py-1 font-mono text-xs">
-                  {config.repo}
-                </span>
-                <span className="text-muted-foreground">:</span>
-                <Input
-                  value={config.branch}
-                  onChange={(e) => handleBranchChange(config.repo, e.target.value)}
-                  placeholder="main, develop"
-                  className={`h-8 flex-1 font-mono text-sm ${
-                    isEmpty ? 'border-destructive bg-destructive/5 focus-visible:ring-destructive' : ''
-                  }`}
-                />
-                <button
-                  type="button"
-                  onClick={() => handleRemoveRepo(config.repo)}
-                  className="shrink-0 rounded p-1 hover:bg-destructive/10 text-muted-foreground hover:text-destructive"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-            );
-          })}
-          {parsedConfigs.some((c) => !c.branch.trim()) && (
-            <p className="text-xs text-destructive">
-              Each repository must have at least one branch specified.
-            </p>
-          )}
-        </div>
-      )}
-    </div>
+    <MultipleSelector
+      value={selectedValues.map((v) => ({
+        value: v,
+        label: options.find((o) => o.value === v)?.label || v,
+      }))}
+      onChange={(selected) => onChange(selected.map((s) => s.value))}
+      defaultOptions={options.map((o) => ({ value: o.value, label: o.label }))}
+      options={options.map((o) => ({ value: o.value, label: o.label }))}
+      placeholder={`Select ${variable.label.toLowerCase()}...`}
+      emptyIndicator={
+        isLoadingOptions ? (
+          <div className="py-2 px-3 text-sm text-muted-foreground flex items-center gap-2">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Loading options...
+          </div>
+        ) : (
+          <p className="text-center text-sm text-muted-foreground">No options available</p>
+        )
+      }
+    />
   );
 }

@@ -179,8 +179,11 @@ export function PlatformIntegrations({ className, taskTemplates }: PlatformInteg
   );
 
   // Merge and sort: platform first (warnings, then connected, then disconnected), then custom
+  // Filter out custom integrations that have a matching platform integration to avoid duplicates
   const unifiedIntegrations = useMemo<UnifiedIntegration[]>(() => {
-    const platformIntegrations: UnifiedIntegration[] = (providers?.filter((p) => p.isActive) || [])
+    type PlatformIntegration = { type: 'platform'; provider: IntegrationProvider; connection?: ConnectionListItem };
+
+    const platformIntegrations: PlatformIntegration[] = (providers?.filter((p) => p.isActive) || [])
       .map((provider) => ({
         type: 'platform' as const,
         provider,
@@ -204,10 +207,16 @@ export function PlatformIntegrations({ className, taskTemplates }: PlatformInteg
         return a.provider.name.localeCompare(b.provider.name);
       });
 
-    const customIntegrations: UnifiedIntegration[] = INTEGRATIONS.map((integration) => ({
-      type: 'custom' as const,
-      integration,
-    }));
+    // Get platform integration IDs to filter out duplicates from custom integrations
+    const platformIds = new Set(platformIntegrations.map((p) => p.provider.id));
+
+    // Filter custom integrations to exclude those that have a matching platform integration
+    const customIntegrations: UnifiedIntegration[] = INTEGRATIONS
+      .filter((integration) => !platformIds.has(integration.id))
+      .map((integration) => ({
+        type: 'custom' as const,
+        integration,
+      }));
 
     return [...platformIntegrations, ...customIntegrations];
   }, [providers, connectionsByProvider]);

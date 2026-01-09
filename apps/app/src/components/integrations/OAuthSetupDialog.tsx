@@ -1,5 +1,6 @@
 'use client';
 
+import { MemoizedReactMarkdown } from '@/components/markdown';
 import { api } from '@/lib/api-client';
 import { Button } from '@comp/ui/button';
 import {
@@ -14,7 +15,7 @@ import { Input } from '@comp/ui/input';
 import { Label } from '@comp/ui/label';
 import { AlertCircle, Copy, ExternalLink, Loader2 } from 'lucide-react';
 import { useParams } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 
 interface OAuthSetupDialogProps {
@@ -68,16 +69,21 @@ export function OAuthSetupDialog({
     }
   };
 
-  const handleOpenChange = (isOpen: boolean) => {
-    if (isOpen && !setupInfo) {
+  // Fetch setup info when dialog opens
+  useEffect(() => {
+    if (open && !setupInfo && !loading) {
       fetchSetupInfo();
     }
+  }, [open]);
+
+  const handleOpenChange = (isOpen: boolean) => {
     if (!isOpen) {
       // Reset state when closing
       setStep('info');
       setClientId('');
       setClientSecret('');
       setError(null);
+      setSetupInfo(null);
     }
     onOpenChange(isOpen);
   };
@@ -146,14 +152,16 @@ export function OAuthSetupDialog({
         )}
 
         {!loading && setupInfo && step === 'info' && (
-          <div className="space-y-4">
+          <div className="space-y-4 max-h-[60vh] overflow-y-auto">
             {/* Setup Instructions */}
-            <div className="space-y-2">
-              <h4 className="font-medium text-sm">Setup Instructions</h4>
-              <div className="p-3 rounded-lg bg-muted/50 text-sm whitespace-pre-wrap">
-                {setupInfo.setupInstructions}
+            {setupInfo.setupInstructions && (
+              <div className="space-y-2">
+                <h4 className="font-medium text-sm">Setup Instructions</h4>
+                <div className="p-3 rounded-lg bg-muted/50 text-sm prose prose-sm dark:prose-invert max-w-none prose-headings:text-base prose-headings:font-semibold prose-headings:mt-3 prose-headings:mb-1 prose-p:my-1 prose-li:my-0 prose-ul:my-1 prose-ol:my-1 prose-code:bg-muted prose-code:px-1 prose-code:rounded">
+                  <MemoizedReactMarkdown>{setupInfo.setupInstructions}</MemoizedReactMarkdown>
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Callback URL */}
             <div className="space-y-2">

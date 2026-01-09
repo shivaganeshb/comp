@@ -4,6 +4,7 @@ import {
   Post,
   Param,
   Body,
+  Query,
   HttpException,
   HttpStatus,
   Logger,
@@ -85,6 +86,53 @@ export class ChecksController {
       providerName: manifest.name,
       connectionStatus: connection.status,
       checks: getAvailableChecks(manifest),
+    };
+  }
+
+  /**
+   * Get check run history for a connection
+   */
+  @Get('connections/:connectionId/history')
+  async getConnectionCheckHistory(
+    @Param('connectionId') connectionId: string,
+    @Query('limit') limitParam?: string,
+  ) {
+    const limit = limitParam ? Math.min(parseInt(limitParam, 10), 100) : 20;
+
+    const connection = await this.connectionRepository.findById(connectionId);
+    if (!connection) {
+      throw new HttpException('Connection not found', HttpStatus.NOT_FOUND);
+    }
+
+    const checkRuns = await this.checkRunRepository.findByConnection(
+      connectionId,
+      limit,
+    );
+
+    return {
+      connectionId,
+      checkRuns: checkRuns.map((run) => ({
+        id: run.id,
+        checkId: run.checkId,
+        checkName: run.checkName,
+        status: run.status,
+        passedCount: run.passedCount,
+        failedCount: run.failedCount,
+        totalChecked: run.totalChecked,
+        durationMs: run.durationMs,
+        createdAt: run.createdAt.toISOString(),
+        completedAt: run.completedAt?.toISOString(),
+        results: run.results.map((result) => ({
+          id: result.id,
+          passed: result.passed,
+          title: result.title,
+          description: result.description,
+          severity: result.severity,
+          resourceType: result.resourceType,
+          resourceId: result.resourceId,
+          remediation: result.remediation,
+        })),
+      })),
     };
   }
 

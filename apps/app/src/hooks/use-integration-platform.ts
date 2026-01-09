@@ -43,10 +43,17 @@ export type {
  * Hook to fetch all available integration providers
  */
 export function useIntegrationProviders(activeOnly = false) {
-  const endpoint = `/v1/integrations/connections/providers${activeOnly ? '?activeOnly=true' : ''}`;
+  const { orgId } = useParams<{ orgId: string }>();
+
+  // Build endpoint with query params
+  const params = new URLSearchParams();
+  if (activeOnly) params.set('activeOnly', 'true');
+  if (orgId) params.set('organizationId', orgId);
+  const queryString = params.toString();
+  const endpoint = `/v1/integrations/connections/providers${queryString ? `?${queryString}` : ''}`;
 
   const { data, error, isLoading, mutate } = useSWR<IntegrationProvider[]>(
-    ['integration-providers', activeOnly],
+    ['integration-providers', activeOnly, orgId],
     async () => {
       const response = await api.get<IntegrationProvider[]>(endpoint);
       if (response.error) {

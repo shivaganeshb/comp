@@ -65,22 +65,26 @@ export class ConnectionsController {
    * List all available integration providers
    */
   @Get('providers')
-  async listProviders(@Query('activeOnly') activeOnly?: string) {
+  async listProviders(
+    @Query('activeOnly') activeOnly?: string,
+    @Query('organizationId') organizationId?: string,
+  ) {
     const manifests =
       activeOnly === 'true' ? getActiveManifests() : getAllManifests();
 
-    // Check platform credentials for OAuth providers
+    // Check credentials for OAuth providers (both platform and org-level)
     const oauthProviderSlugs = manifests
       .filter((m) => m.auth.type === 'oauth2')
       .map((m) => m.id);
 
-    const platformCredentialsMap = new Map<string, boolean>();
+    const oauthConfiguredMap = new Map<string, boolean>();
     for (const slug of oauthProviderSlugs) {
       const availability = await this.oauthCredentialsService.checkAvailability(
         slug,
-        '', // Empty org ID to just check platform credentials
+        organizationId || '',
       );
-      platformCredentialsMap.set(slug, availability.hasPlatformCredentials);
+      // OAuth is configured if either platform or org has credentials
+      oauthConfiguredMap.set(slug, availability.available);
     }
 
     return manifests.map((m) => {
@@ -94,10 +98,10 @@ export class ConnectionsController {
       const setupInstructions =
         m.auth.type === 'custom' ? m.auth.config.setupInstructions : undefined;
 
-      // For OAuth providers, check if platform credentials are configured
+      // For OAuth providers, check if credentials are configured (platform or org-level)
       const oauthConfigured =
         m.auth.type === 'oauth2'
-          ? (platformCredentialsMap.get(m.id) ?? false)
+          ? (oauthConfiguredMap.get(m.id) ?? false)
           : undefined;
 
       // Get mapped tasks from checks and collect required variables
