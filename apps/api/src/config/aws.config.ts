@@ -9,6 +9,14 @@ const awsConfigSchema = z.object({
   endpoint: z.string().optional(),
 });
 
+// Optional AWS config schema for when GCP is the storage provider
+const awsConfigSchemaOptional = z.object({
+  region: z.string().default('us-east-1'),
+  accessKeyId: z.string().optional().default(''),
+  secretAccessKey: z.string().optional().default(''),
+  bucketName: z.string().optional().default(''),
+});
+
 export type AwsConfig = z.infer<typeof awsConfigSchema>;
 
 export const awsConfig = registerAs('aws', (): AwsConfig => {
@@ -20,16 +28,24 @@ export const awsConfig = registerAs('aws', (): AwsConfig => {
     endpoint: process.env.APP_AWS_ENDPOINT || '',
   };
 
-  // Validate configuration at startup
-  const result = awsConfigSchema.safeParse(config);
+  // Only validate AWS config if AWS is the storage provider
+  const storageProvider = process.env.STORAGE_PROVIDER || 'aws';
 
-  if (!result.success) {
-    throw new Error(
-      `AWS configuration validation failed: ${result.error.issues
-        .map((e) => `${e.path.join('.')}: ${e.message}`)
-        .join(', ')}`,
-    );
+  if (storageProvider === 'aws') {
+    const result = awsConfigSchema.safeParse(config);
+
+    if (!result.success) {
+      throw new Error(
+        `AWS configuration validation failed: ${result.error.issues
+          .map((e) => `${e.path.join('.')}: ${e.message}`)
+          .join(', ')}`,
+      );
+    }
+
+    return result.data;
   }
 
-  return result.data;
+  // For GCP or other providers, use optional schema (no validation errors)
+  const result = awsConfigSchemaOptional.safeParse(config);
+  return result.data as AwsConfig;
 });

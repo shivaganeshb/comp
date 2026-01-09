@@ -1,0 +1,37 @@
+{
+  "name": "@trycompai/storage",
+  "description": "Provider-agnostic cloud storage abstraction for Comp AI (AWS S3 / GCP Cloud Storage)",
+  "version": "1.0.0",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.721.0",
+    "@aws-sdk/s3-request-presigner": "^3.721.0",
+    "@google-cloud/storage": "^7.15.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.3"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**"
+  ],
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "private": true,
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts",
+    "clean": "rm -rf .turbo node_modules dist",
+    "dev": "tsup src/index.ts --format cjs,esm --watch --dts",
+    "format": "prettier --write .",
+    "lint": "prettier --check .",
+    "typecheck": "tsc --noEmit"
+  },
+  "sideEffects": false
+}

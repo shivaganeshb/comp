@@ -1,10 +1,9 @@
 import {
-  DeleteObjectCommand,
-  GetObjectCommand,
-  PutObjectCommand,
-  S3Client,
-} from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+  getBucketName,
+  getStorageProvider,
+  sanitizeHeaderValue,
+  type StorageProvider,
+} from '@trycompai/storage';
 import { AttachmentEntityType, AttachmentType, db } from '@db';
 import {
   BadRequestException,
@@ -14,34 +13,21 @@ import {
 import { randomBytes } from 'crypto';
 import { AttachmentResponseDto } from '../tasks/dto/task-responses.dto';
 import { UploadAttachmentDto } from './upload-attachment.dto';
-import { s3Client } from '@/app/s3';
 
 @Injectable()
 export class AttachmentsService {
-  private s3Client: S3Client;
+  private storageProvider: StorageProvider;
   private bucketName: string;
   private readonly MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024; // 100MB
   private readonly SIGNED_URL_EXPIRY = 900; // 15 minutes
 
   constructor() {
-    // AWS configuration is validated at startup via ConfigModule
-    // Safe to access environment variables directly since they're validated
-    this.bucketName = process.env.APP_AWS_BUCKET_NAME!;
-
-    if (!s3Client) {
-      console.error(
-        'S3 Client is not initialized. Check AWS S3 configuration.',
-      );
-      throw new Error(
-        'S3 Client is not initialized. Check AWS S3 configuration.',
-      );
-    }
-
-    this.s3Client = s3Client;
+    this.bucketName = getBucketName('attachments');
+    this.storageProvider = getStorageProvider();
   }
 
   /**
-   * Upload attachment to S3 and create database record
+   * Upload attachment to storage and create database record
    */
   async uploadAttachment(
     organizationId: string,
@@ -127,8 +113,8 @@ export class AttachmentsService {
       const sanitizedFileName = this.sanitizeFileName(uploadDto.fileName);
       const timestamp = Date.now();
 
-      // Special S3 path structure for task items: org_{orgId}/attachments/task-item/{entityType}/{entityId}
-      let s3Key: string;
+      // Special storage path structure for task items: org_{orgId}/attachments/task-item/{entityType}/{entityId}
+      let storageKey: string;
       if (entityType === 'task_item') {
         // For task items, extract entityType and entityId from metadata
         // Metadata should contain taskItemEntityType and taskItemEntityId
@@ -136,20 +122,19 @@ export class AttachmentsService {
           uploadDto.description?.split('|')[0] || 'unknown';
         const taskItemEntityId =
           uploadDto.description?.split('|')[1] || entityId;
-        s3Key = `${organizationId}/attachments/task-item/${taskItemEntityType}/${taskItemEntityId}/${timestamp}-${fileId}-${sanitizedFileName}`;
+        storageKey = `${organizationId}/attachments/task-item/${taskItemEntityType}/${taskItemEntityId}/${timestamp}-${fileId}-${sanitizedFileName}`;
       } else {
-        s3Key = `${organizationId}/attachments/${entityType}/${entityId}/${timestamp}-${fileId}-${sanitizedFileName}`;
+        storageKey = `${organizationId}/attachments/${entityType}/${entityId}/${timestamp}-${fileId}-${sanitizedFileName}`;
       }
 
-      // Upload to S3
-      const putCommand = new PutObjectCommand({
-        Bucket: this.bucketName,
-        Key: s3Key,
-        Body: fileBuffer,
-        ContentType: uploadDto.fileType,
-        Metadata: {
-          // S3 metadata becomes HTTP headers (x-amz-meta-*) and must be ASCII without control chars
-          originalFileName: this.sanitizeHeaderValue(uploadDto.fileName),
+      // Upload to storage
+      await this.storageProvider.upload({
+        bucket: this.bucketName,
+        key: storageKey,
+        data: fileBuffer,
+        contentType: uploadDto.fileType,
+        metadata: {
+          originalFileName: sanitizeHeaderValue(uploadDto.fileName),
           organizationId,
           entityId,
           entityType,
@@ -157,13 +142,11 @@ export class AttachmentsService {
         },
       });
 
-      await this.s3Client.send(putCommand);
-
       // Create database record
       const attachment = await db.attachment.create({
         data: {
           name: uploadDto.fileName,
-          url: s3Key,
+          url: storageKey,
           type: this.mapFileTypeToAttachmentType(uploadDto.fileType),
           entityId,
           entityType,
@@ -172,7 +155,7 @@ export class AttachmentsService {
       });
 
       // Generate signed URL for immediate access
-      const downloadUrl = await this.generateSignedUrl(s3Key);
+      const downloadUrl = await this.generateSignedUrl(storageKey);
 
       return {
         id: attachment.id,
@@ -291,7 +274,7 @@ export class AttachmentsService {
   }
 
   /**
-   * Delete attachment from S3 and database
+   * Delete attachment from storage and database
    */
   async deleteAttachment(
     organizationId: string,
@@ -310,13 +293,11 @@ export class AttachmentsService {
         throw new BadRequestException('Attachment not found');
       }
 
-      // Delete from S3
-      const deleteCommand = new DeleteObjectCommand({
-        Bucket: this.bucketName,
-        Key: attachment.url,
+      // Delete from storage
+      await this.storageProvider.delete({
+        bucket: this.bucketName,
+        key: attachment.url,
       });
-
-      await this.s3Client.send(deleteCommand);
 
       // Delete from database
       await db.attachment.delete({
@@ -337,18 +318,16 @@ export class AttachmentsService {
   /**
    * Generate signed URL for file download
    */
-  private async generateSignedUrl(s3Key: string): Promise<string> {
-    const getCommand = new GetObjectCommand({
-      Bucket: this.bucketName,
-      Key: s3Key,
-    });
-
-    return getSignedUrl(this.s3Client, getCommand, {
+  private async generateSignedUrl(storageKey: string): Promise<string> {
+    return this.storageProvider.getSignedUrl({
+      bucket: this.bucketName,
+      key: storageKey,
+      operation: 'read',
       expiresIn: this.SIGNED_URL_EXPIRY,
     });
   }
 
-  async uploadToS3(
+  async uploadToStorage(
     fileBuffer: Buffer,
     fileName: string,
     contentType: string,
@@ -359,83 +338,49 @@ export class AttachmentsService {
     const fileId = randomBytes(16).toString('hex');
     const sanitizedFileName = this.sanitizeFileName(fileName);
     const timestamp = Date.now();
-    const s3Key = `${organizationId}/attachments/${entityType}/${entityId}/${timestamp}-${fileId}-${sanitizedFileName}`;
+    const storageKey = `${organizationId}/attachments/${entityType}/${entityId}/${timestamp}-${fileId}-${sanitizedFileName}`;
 
-    const putCommand = new PutObjectCommand({
-      Bucket: this.bucketName,
-      Key: s3Key,
-      Body: fileBuffer,
-      ContentType: contentType,
-      Metadata: {
-        originalFileName: this.sanitizeHeaderValue(fileName),
+    await this.storageProvider.upload({
+      bucket: this.bucketName,
+      key: storageKey,
+      data: fileBuffer,
+      contentType,
+      metadata: {
+        originalFileName: sanitizeHeaderValue(fileName),
         organizationId,
         entityId,
         entityType,
       },
     });
 
-    await this.s3Client.send(putCommand);
-    return s3Key;
+    return storageKey;
   }
 
-  async getPresignedDownloadUrl(s3Key: string): Promise<string> {
-    return this.generateSignedUrl(s3Key);
-  }
-
-  /**
-   * Generate presigned download URL with a custom download filename
-   */
-  async getPresignedDownloadUrlWithFilename(
-    s3Key: string,
-    downloadFilename: string,
+  // Backward compatibility alias
+  async uploadToS3(
+    fileBuffer: Buffer,
+    fileName: string,
+    contentType: string,
+    organizationId: string,
+    entityType: string,
+    entityId: string,
   ): Promise<string> {
-    const sanitizedFilename = this.sanitizeHeaderValue(downloadFilename);
-    const getCommand = new GetObjectCommand({
-      Bucket: this.bucketName,
-      Key: s3Key,
-      ResponseContentDisposition: `attachment; filename="${sanitizedFilename}"`,
-    });
-
-    return getSignedUrl(this.s3Client, getCommand, {
-      expiresIn: this.SIGNED_URL_EXPIRY,
-    });
+    return this.uploadToStorage(fileBuffer, fileName, contentType, organizationId, entityType, entityId);
   }
 
-  async getObjectBuffer(s3Key: string): Promise<Buffer> {
-    const getCommand = new GetObjectCommand({
-      Bucket: this.bucketName,
-      Key: s3Key,
+  async getPresignedDownloadUrl(storageKey: string): Promise<string> {
+    return this.generateSignedUrl(storageKey);
+  }
+
+  async getObjectBuffer(storageKey: string): Promise<Buffer> {
+    return this.storageProvider.download({
+      bucket: this.bucketName,
+      key: storageKey,
     });
-
-    const response = await this.s3Client.send(getCommand);
-    const chunks: Uint8Array[] = [];
-
-    if (!response.Body) {
-      throw new InternalServerErrorException('No file data received from S3');
-    }
-
-    for await (const chunk of response.Body as any) {
-      chunks.push(chunk);
-    }
-
-    return Buffer.concat(chunks);
   }
 
   private sanitizeFileName(fileName: string): string {
     return fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
-  }
-
-  /**
-   * Sanitize header value for S3 user metadata (x-amz-meta-*) to avoid invalid characters
-   * - Remove control characters (\x00-\x1F, \x7F)
-   * - Replace non-ASCII with '_'
-   * - Trim whitespace
-   */
-  private sanitizeHeaderValue(value: string): string {
-    // eslint-disable-next-line no-control-regex
-    const withoutControls = value.replace(/[\x00-\x1F\x7F]/g, '');
-    const asciiOnly = withoutControls.replace(/[^\x20-\x7E]/g, '_');
-    return asciiOnly.trim();
   }
 
   /**

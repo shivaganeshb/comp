@@ -1,9 +1,7 @@
 'use server';
 
-import { BUCKET_NAME, extractS3KeyFromUrl, s3Client } from '@/app/s3'; // Import shared client
+import { BUCKET_NAME, extractS3KeyFromUrl, storageProvider } from '@/app/s3';
 import { auth } from '@/utils/auth';
-import { GetObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { AttachmentEntityType, db } from '@db';
 import { headers } from 'next/headers';
 import { z } from 'zod';
@@ -26,6 +24,13 @@ export const getTaskAttachmentUrl = async (input: z.infer<typeof schema>) => {
     } as const;
   }
 
+  if (!storageProvider) {
+    return {
+      success: false,
+      error: 'Storage service is unavailable',
+    } as const;
+  }
+
   try {
     // 1. Find the attachment and verify ownership/type
     const attachment = await db.attachment.findUnique({
@@ -43,31 +48,28 @@ export const getTaskAttachmentUrl = async (input: z.infer<typeof schema>) => {
       } as const;
     }
 
-    // 2. Extract S3 key from the stored URL
+    // 2. Extract storage key from the stored URL
     let key: string;
     try {
       key = extractS3KeyFromUrl(attachment.url);
     } catch (extractError) {
-      console.error('Error extracting S3 key for attachment:', attachmentId, extractError);
+      console.error('Error extracting storage key for attachment:', attachmentId, extractError);
       return {
         success: false,
         error: 'Could not process attachment URL',
       } as const;
     }
 
-    // 3. Generate Signed URL using shared client
+    // 3. Generate Signed URL using storage provider
     try {
-      const command = new GetObjectCommand({
-        Bucket: BUCKET_NAME!, // Use imported bucket name
-        Key: key,
-      });
-
-      const signedUrl = await getSignedUrl(s3Client, command, {
+      const signedUrl = await storageProvider.getSignedUrl({
+        bucket: BUCKET_NAME!,
+        key,
+        operation: 'read',
         expiresIn: 3600, // URL expires in 1 hour
       });
 
       if (!signedUrl) {
-        // This case is unlikely if getSignedUrl doesn't throw, but good to check
         console.error('getSignedUrl returned undefined for key:', key);
         return {
           success: false,
@@ -77,16 +79,14 @@ export const getTaskAttachmentUrl = async (input: z.infer<typeof schema>) => {
 
       // 4. Return Success
       return { success: true, data: { signedUrl } };
-    } catch (s3Error) {
-      console.error('S3 getSignedUrl Error:', s3Error);
-      // Provide a generic error message to the client
+    } catch (storageError) {
+      console.error('Storage getSignedUrl Error:', storageError);
       return {
         success: false,
         error: 'Could not generate access URL for the file',
       } as const;
     }
   } catch (dbError) {
-    // Catch potential DB errors during findUnique
     console.error('Database Error fetching attachment:', dbError);
     return {
       success: false,

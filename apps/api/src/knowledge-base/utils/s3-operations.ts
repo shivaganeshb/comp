@@ -1,16 +1,14 @@
 import {
-  PutObjectCommand,
-  DeleteObjectCommand,
-  GetObjectCommand,
-} from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+  getBucketName,
+  getStorageProvider,
+  sanitizeHeaderValue,
+  type StorageProvider,
+} from '@trycompai/storage';
 import { randomBytes } from 'crypto';
-import { s3Client, APP_AWS_KNOWLEDGE_BASE_BUCKET } from '@/app/s3';
 import {
   MAX_FILE_SIZE_BYTES,
   SIGNED_URL_EXPIRATION_SECONDS,
   sanitizeFileName,
-  sanitizeMetadataFileName,
   generateS3Key,
 } from './constants';
 
@@ -23,23 +21,35 @@ export interface SignedUrlResult {
   signedUrl: string;
 }
 
+let storageProvider: StorageProvider | null = null;
+let bucketName: string = '';
+
+function getProvider(): StorageProvider {
+  if (!storageProvider) {
+    storageProvider = getStorageProvider();
+    bucketName = getBucketName('knowledgeBase');
+  }
+  return storageProvider;
+}
+
 /**
- * Validates that S3 is configured
+ * Validates that storage is configured
  */
 export function validateS3Config(): void {
-  if (!s3Client) {
-    throw new Error('S3 client not configured');
+  const provider = getProvider();
+  if (!provider) {
+    throw new Error('Storage provider not configured');
   }
 
-  if (!APP_AWS_KNOWLEDGE_BASE_BUCKET) {
+  if (!bucketName) {
     throw new Error(
-      'Knowledge base bucket is not configured. Please set APP_AWS_KNOWLEDGE_BASE_BUCKET environment variable.',
+      'Knowledge base bucket is not configured. Please set APP_AWS_KNOWLEDGE_BASE_BUCKET or GCP_KNOWLEDGE_BASE_BUCKET environment variable.',
     );
   }
 }
 
 /**
- * Uploads a document to S3
+ * Uploads a document to storage
  */
 export async function uploadToS3(
   organizationId: string,
@@ -48,6 +58,7 @@ export async function uploadToS3(
   fileData: string,
 ): Promise<UploadResult> {
   validateS3Config();
+  const provider = getProvider();
 
   // Convert base64 to buffer
   const fileBuffer = Buffer.from(fileData, 'base64');
@@ -64,19 +75,17 @@ export async function uploadToS3(
   const sanitized = sanitizeFileName(fileName);
   const s3Key = generateS3Key(organizationId, fileId, sanitized);
 
-  // Upload to S3
-  const putCommand = new PutObjectCommand({
-    Bucket: APP_AWS_KNOWLEDGE_BASE_BUCKET!,
-    Key: s3Key,
-    Body: fileBuffer,
-    ContentType: fileType,
-    Metadata: {
-      originalFileName: sanitizeMetadataFileName(fileName),
+  // Upload to storage
+  await provider.upload({
+    bucket: bucketName,
+    key: s3Key,
+    data: fileBuffer,
+    contentType: fileType,
+    metadata: {
+      originalFileName: sanitizeHeaderValue(fileName),
       organizationId,
     },
   });
-
-  await s3Client!.send(putCommand);
 
   return {
     s3Key,
@@ -92,15 +101,14 @@ export async function generateDownloadUrl(
   fileName: string,
 ): Promise<SignedUrlResult> {
   validateS3Config();
+  const provider = getProvider();
 
-  const command = new GetObjectCommand({
-    Bucket: APP_AWS_KNOWLEDGE_BASE_BUCKET!,
-    Key: s3Key,
-    ResponseContentDisposition: `attachment; filename="${encodeURIComponent(fileName)}"`,
-  });
-
-  const signedUrl = await getSignedUrl(s3Client!, command, {
+  const signedUrl = await provider.getSignedUrl({
+    bucket: bucketName,
+    key: s3Key,
+    operation: 'read',
     expiresIn: SIGNED_URL_EXPIRATION_SECONDS,
+    contentDisposition: `attachment; filename="${encodeURIComponent(fileName)}"`,
   });
 
   return { signedUrl };
@@ -112,40 +120,51 @@ export async function generateDownloadUrl(
 export async function generateViewUrl(
   s3Key: string,
   fileName: string,
-  fileType: string,
+  _fileType: string,
 ): Promise<SignedUrlResult> {
   validateS3Config();
+  const provider = getProvider();
 
-  const command = new GetObjectCommand({
-    Bucket: APP_AWS_KNOWLEDGE_BASE_BUCKET!,
-    Key: s3Key,
-    ResponseContentDisposition: `inline; filename="${encodeURIComponent(fileName)}"`,
-    ResponseContentType: fileType || 'application/octet-stream',
-  });
-
-  const signedUrl = await getSignedUrl(s3Client!, command, {
+  const signedUrl = await provider.getSignedUrl({
+    bucket: bucketName,
+    key: s3Key,
+    operation: 'read',
     expiresIn: SIGNED_URL_EXPIRATION_SECONDS,
+    contentDisposition: `inline; filename="${encodeURIComponent(fileName)}"`,
   });
 
   return { signedUrl };
 }
 
 /**
- * Deletes a document from S3
+ * Deletes a document from storage
  * Returns true if successful, false if error (non-throwing)
  */
 export async function deleteFromS3(s3Key: string): Promise<boolean> {
   try {
     validateS3Config();
+    const provider = getProvider();
 
-    const deleteCommand = new DeleteObjectCommand({
-      Bucket: APP_AWS_KNOWLEDGE_BASE_BUCKET!,
-      Key: s3Key,
+    await provider.delete({
+      bucket: bucketName,
+      key: s3Key,
     });
 
-    await s3Client!.send(deleteCommand);
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Downloads a document from storage as Buffer
+ */
+export async function downloadFromStorage(s3Key: string): Promise<Buffer> {
+  validateS3Config();
+  const provider = getProvider();
+
+  return provider.download({
+    bucket: bucketName,
+    key: s3Key,
+  });
 }
