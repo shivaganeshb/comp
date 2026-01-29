@@ -11787,6 +11787,29 @@
         ]
       }
     },
+    "/v1/integrations/connections/{id}/debug/atlassian-resources": {
+      "get": {
+        "operationId": "ConnectionsController_debugAtlassianResources_v1",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Connections"
+        ]
+      }
+    },
     "/v1/admin/integrations": {
       "get": {
         "operationId": "AdminIntegrationsController_listIntegrations_v1",

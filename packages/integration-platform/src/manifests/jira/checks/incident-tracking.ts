@@ -50,16 +50,26 @@ export const incidentTrackingCheck: IntegrationCheck = {
       return;
     }
 
-    const incidentProjectKey = ctx.variables.incident_project_key as string;
+    const incidentProjectKey = (ctx.variables.incident_project_key as string)?.trim();
+
+    // Skip check if no incident project is configured
+    if (!incidentProjectKey) {
+      ctx.log('No incident project configured, skipping incident tracking check');
+      ctx.pass({
+        title: 'Incident tracking check skipped',
+        description: 'No incident project key configured. Configure the incident_project_key variable to enable this check.',
+        resourceType: 'jira-incidents',
+        resourceId: cloudId,
+        evidence: {
+          cloudId,
+          reason: 'incident_project_key not configured',
+        },
+      });
+      return;
+    }
 
     // Build JQL for incident-like issues
-    let jql: string;
-    if (incidentProjectKey) {
-      jql = `project = "${incidentProjectKey}" ORDER BY created DESC`;
-    } else {
-      // Search across all projects for incident-like issue types
-      jql = `issuetype in (Incident, "Security Incident", Bug) AND (labels in (security, incident, breach) OR summary ~ "incident" OR summary ~ "security") ORDER BY created DESC`;
-    }
+    const jql = `project = "${incidentProjectKey}" ORDER BY created DESC`;
 
     try {
       const response = await ctx.post<IssueSearchResponse>(
@@ -86,39 +96,20 @@ export const incidentTrackingCheck: IntegrationCheck = {
       ctx.log(`Found ${total} incident-related issues`);
 
       if (total === 0) {
-        if (incidentProjectKey) {
-          ctx.fail({
-            title: 'No incidents found in designated project',
-            description: `No issues found in project ${incidentProjectKey}. Either no incidents have occurred, or they are not being tracked.`,
-            resourceType: 'jira-incidents',
-            resourceId: cloudId,
-            severity: 'low',
-            remediation: `Ensure security incidents are logged in Jira project "${incidentProjectKey}".
+        ctx.fail({
+          title: 'No incidents found in designated project',
+          description: `No issues found in project ${incidentProjectKey}. Either no incidents have occurred, or they are not being tracked.`,
+          resourceType: 'jira-incidents',
+          resourceId: cloudId,
+          severity: 'low',
+          remediation: `Ensure security incidents are logged in Jira project "${incidentProjectKey}".
 If no incidents have occurred, document this in your incident response log.`,
-            evidence: {
-              cloudId,
-              incidentProjectKey,
-              searchQuery: jql,
-            },
-          });
-        } else {
-          ctx.fail({
-            title: 'No incident tracking detected',
-            description: 'No incident-related issues found. Consider setting up a dedicated incident tracking project.',
-            resourceType: 'jira-incidents',
-            resourceId: cloudId,
-            severity: 'medium',
-            remediation: `Set up incident tracking in Jira:
-1. Create a dedicated project for incidents (e.g., key: INC or SEC)
-2. Create an "Incident" issue type with required fields
-3. Define a workflow: Open → In Progress → Resolved → Closed
-4. Configure the incident_project_key variable in this integration`,
-            evidence: {
-              cloudId,
-              searchQuery: jql,
-            },
-          });
-        }
+          evidence: {
+            cloudId,
+            incidentProjectKey,
+            searchQuery: jql,
+          },
+        });
         return;
       }
 

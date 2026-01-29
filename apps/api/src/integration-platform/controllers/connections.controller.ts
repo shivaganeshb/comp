@@ -1086,4 +1086,60 @@ export class ConnectionsController {
 
     return { success: true };
   }
+
+  /**
+   * Debug endpoint: Get Atlassian accessible resources for a Jira connection.
+   * This helps verify the correct Cloud ID to use.
+   */
+  @Get(':id/debug/atlassian-resources')
+  async debugAtlassianResources(@Param('id') id: string) {
+    const connection = await this.connectionService.getConnection(id);
+    const providerSlug = (connection as { provider?: { slug: string } })
+      .provider?.slug;
+
+    if (providerSlug !== 'jira') {
+      throw new HttpException(
+        'This endpoint is only for Jira connections',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // Get the access token
+    const credentials =
+      await this.credentialVaultService.getDecryptedCredentials(id);
+
+    if (!credentials?.access_token) {
+      throw new HttpException(
+        'No access token found for connection',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    // Call Atlassian accessible-resources API
+    const response = await fetch(
+      'https://api.atlassian.com/oauth/token/accessible-resources',
+      {
+        headers: {
+          Authorization: `Bearer ${credentials.access_token}`,
+          Accept: 'application/json',
+        },
+      },
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new HttpException(
+        `Atlassian API error: ${response.status} - ${errorText}`,
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
+
+    const resources = await response.json();
+
+    return {
+      connectionId: id,
+      currentCloudId: (connection.variables as Record<string, unknown>)?.cloud_id,
+      accessibleResources: resources,
+    };
+  }
 }
