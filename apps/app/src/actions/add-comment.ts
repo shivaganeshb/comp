@@ -1,20 +1,14 @@
 'use server';
 
 import { AppError, appErrors } from '@/lib/errors';
-import { CommentEntityType, db } from '@db';
+import { db } from '@db';
 import { revalidatePath } from 'next/cache';
 import { headers } from 'next/headers';
-import { z } from 'zod';
 import { authActionClient } from './safe-action';
+import { addCommentSchema } from './schema';
 
 export const addCommentAction = authActionClient
-  .inputSchema(
-    z.object({
-      content: z.string(),
-      entityId: z.string(),
-      entityType: z.nativeEnum(CommentEntityType),
-    }),
-  )
+  .inputSchema(addCommentSchema)
   .metadata({
     name: 'add-comment',
     track: {

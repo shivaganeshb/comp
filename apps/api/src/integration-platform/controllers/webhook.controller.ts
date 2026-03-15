@@ -76,14 +76,14 @@ export class WebhookController {
     const manifest = getManifest(providerSlug);
     if (!manifest) {
       throw new HttpException(
-        `Unknown provider: ${providerSlug}`,
+        'Unknown integration provider',
         HttpStatus.NOT_FOUND,
       );
     }
 
     if (!manifest.capabilities.includes('webhook') || !manifest.webhook) {
       throw new HttpException(
-        `${providerSlug} does not support webhooks`,
+        'This integration provider does not support webhooks',
         HttpStatus.BAD_REQUEST,
       );
     }

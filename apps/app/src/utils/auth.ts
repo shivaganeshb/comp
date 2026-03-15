@@ -113,7 +113,7 @@ export const auth = betterAuth({
               };
             }
           } catch (error) {
-            console.error('[Better Auth] Session creation hook error:', error);
+            console.error('[Better Auth] Session creation hook error:', error instanceof Error ? error.message : 'Unknown error');
             // Fallback: create session without organization
             return {
               data: session,

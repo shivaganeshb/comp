@@ -8,6 +8,7 @@ import * as express from 'express';
 import helmet from 'helmet';
 import path from 'path';
 import { AppModule } from './app.module';
+import { RequestLoggingInterceptor } from './lib/request-logging.interceptor';
 import { mkdirSync, writeFileSync, existsSync } from 'fs';
 
 let app: INestApplication | null = null;
@@ -55,6 +56,9 @@ async function bootstrap(): Promise<void> {
       },
     }),
   );
+
+  // Enable request logging with PII masking for SOC2 compliance
+  app.useGlobalInterceptors(new RequestLoggingInterceptor());
 
   // Enable API versioning
   app.enableVersioning({

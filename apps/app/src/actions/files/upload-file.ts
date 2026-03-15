@@ -7,6 +7,10 @@ import { BUCKET_NAME, storageProvider } from '@/app/s3';
 import { auth } from '@/utils/auth';
 import { logger } from '@/utils/logger';
 import { AttachmentEntityType, AttachmentType, db } from '@db';
+import {
+  isBlockedFileExtension,
+  isBlockedMimeType,
+} from '@trycompai/utils/sanitize';
 import { revalidatePath } from 'next/cache';
 import { headers } from 'next/headers';
 import { z } from 'zod';
@@ -33,10 +37,22 @@ function mapFileTypeToAttachmentType(fileType: string): AttachmentType {
 }
 
 const uploadAttachmentSchema = z.object({
-  fileName: z.string(),
-  fileType: z.string(),
-  fileData: z.string(),
-  entityId: z.string(),
+  fileName: z
+    .string()
+    .min(1)
+    .max(255)
+    .refine((name) => !isBlockedFileExtension(name), {
+      message: 'This file type is not allowed for security reasons',
+    }),
+  fileType: z
+    .string()
+    .min(1)
+    .regex(/^[a-zA-Z0-9\-]+\/[a-zA-Z0-9\-\+\.]+$/, 'Invalid MIME type format')
+    .refine((mime) => !isBlockedMimeType(mime), {
+      message: 'This file type is not allowed for security reasons',
+    }),
+  fileData: z.string().min(1),
+  entityId: z.string().min(1),
   entityType: z.nativeEnum(AttachmentEntityType),
   pathToRevalidate: z.string().optional(),
 });

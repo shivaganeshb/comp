@@ -7,6 +7,8 @@ import {
   IsArray,
   IsDateString,
   IsObject,
+  MaxLength,
+  ArrayMaxSize,
 } from 'class-validator';
 
 export enum PolicyStatus {
@@ -37,6 +39,7 @@ export class CreatePolicyDto {
     example: 'Data Privacy Policy',
   })
   @IsString()
+  @MaxLength(255)
   name: string;
 
   @ApiProperty({
@@ -46,6 +49,7 @@ export class CreatePolicyDto {
   })
   @IsOptional()
   @IsString()
+  @MaxLength(5000)
   description?: string;
 
   @ApiProperty({
@@ -81,6 +85,7 @@ export class CreatePolicyDto {
     items: { type: 'object', additionalProperties: true },
   })
   @IsArray()
+  @ArrayMaxSize(1000)
   content: unknown[];
 
   @ApiProperty({

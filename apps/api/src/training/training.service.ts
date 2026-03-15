@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { db } from '@db';
+import { maskEmail } from '@trycompai/utils/data-masking';
 import { TrainingEmailService } from './training-email.service';
 import { TrainingCertificatePdfService } from './training-certificate-pdf.service';
 
@@ -117,14 +118,14 @@ export class TrainingService {
       });
 
       this.logger.log(
-        `Training completion email sent to ${member.user.email} for member ${memberId}`,
+        `Training completion email sent to ${maskEmail(member.user.email)} for member ${memberId}`,
       );
 
       return { sent: true };
     } catch (error) {
       this.logger.error(
-        `Failed to send training completion email to ${member.user.email}:`,
-        error,
+        `Failed to send training completion email to ${maskEmail(member.user.email)}:`,
+        error instanceof Error ? error.message : 'Unknown error',
       );
       throw error;
     }

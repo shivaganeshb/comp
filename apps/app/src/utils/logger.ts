@@ -1,3 +1,5 @@
+import { sanitizeForLog } from '@trycompai/utils/data-masking';
+
 /**
  * Skip rule configuration for sensitive logs
  */
@@ -110,6 +112,7 @@ const loggerValidator = new LoggerValidatorLayer(DEFAULT_SKIP_RULES);
 /**
  * Safely formats params for logging.
  * Handles edge cases like circular references and BigInt that would throw in JSON.stringify.
+ * Automatically sanitizes PII fields for SOC2 compliance.
  */
 const formatParams = (params: unknown): unknown => {
   if (!params) {
@@ -121,7 +124,9 @@ const formatParams = (params: unknown): unknown => {
   }
 
   try {
-    return JSON.stringify(params, null, 2);
+    // Sanitize PII before serializing
+    const sanitized = sanitizeForLog(params);
+    return JSON.stringify(sanitized, null, 2);
   } catch {
     // Fallback for circular references, BigInt, or other non-serializable values
     // Return the raw object - console.log handles these natively

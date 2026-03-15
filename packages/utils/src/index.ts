@@ -1,3 +1,5 @@
+export * from './sanitize';
+
 export function stripSpecialCharacters(inputString: string) {
   // Remove special characters and spaces, keep alphanumeric, hyphens/underscores, and dots
   return inputString

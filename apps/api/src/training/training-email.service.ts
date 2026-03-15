@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { maskEmail } from '@trycompai/utils/data-masking';
 import { sendEmail } from '../email/resend';
 import { TrainingCompletedEmail } from '../email/templates/training-completed';
 import { TrainingCertificatePdfService } from './training-certificate-pdf.service';
@@ -28,7 +29,7 @@ export class TrainingEmailService {
       });
 
     this.logger.log(
-      `Generated training certificate PDF for ${toEmail} (${certificatePdf.length} bytes)`,
+      `Generated training certificate PDF for ${maskEmail(toEmail)} (${certificatePdf.length} bytes)`,
     );
 
     // Generate a safe filename
@@ -55,7 +56,7 @@ export class TrainingEmailService {
     });
 
     this.logger.log(
-      `Training completed email sent to ${toEmail} with certificate (ID: ${id})`,
+      `Training completed email sent to ${maskEmail(toEmail)} with certificate (ID: ${id})`,
     );
   }
 }

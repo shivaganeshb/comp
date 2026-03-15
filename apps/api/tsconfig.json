@@ -25,7 +25,9 @@
       "@/*": ["./src/*"],
       "@db": ["./prisma/index"],
       "@comp/email": ["../../packages/email/index.ts"],
-      "@comp/email/*": ["../../packages/email/*"]
+      "@comp/email/*": ["../../packages/email/*"],
+      "@trycompai/utils": ["../../packages/utils/src/index.ts"],
+      "@trycompai/utils/*": ["../../packages/utils/src/*"]
     },
     "jsx": "react-jsx"
   }

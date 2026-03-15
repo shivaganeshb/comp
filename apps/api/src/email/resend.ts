@@ -89,7 +89,7 @@ export const sendEmail = async ({
       id: data?.id,
     };
   } catch (error) {
-    console.error('Email sending error:', error);
+    console.error('Email sending error:', error instanceof Error ? error.message : 'Unknown error');
     throw error instanceof Error ? error : new Error('Failed to send email');
   }
 };

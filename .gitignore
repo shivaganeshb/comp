@@ -93,3 +93,4 @@ scripts/sync-release-branch.sh
 # GCP Service Account Keys
 *-key.json
 *-credentials.json
+apps/api/CLAUDE.md

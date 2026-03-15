@@ -1,6 +1,7 @@
 import { db, FindingStatus, FindingType } from '@db';
 import { Injectable, Logger } from '@nestjs/common';
 import { isUserUnsubscribed } from '@trycompai/email';
+import { maskEmail } from '@trycompai/utils/data-masking';
 import { sendEmail } from '../email/resend';
 import { FindingNotificationEmail } from '../email/templates/finding-notification';
 import { NovuService } from '../notifications/novu.service';
@@ -304,11 +305,11 @@ export class FindingNotifierService {
       const isUnsubscribed = await isUserUnsubscribed(db, recipient.email, 'findingNotifications');
 
       if (isUnsubscribed) {
-        this.logger.log(`Skipping notification: ${recipient.email} is unsubscribed`);
+        this.logger.log(`Skipping notification: ${maskEmail(recipient.email)} is unsubscribed`);
         return;
       }
 
-      this.logger.log(`Sending ${action} notification to ${recipient.email}`);
+      this.logger.log(`Sending ${action} notification to ${maskEmail(recipient.email)}`);
 
       // Send email and in-app notifications in parallel
       await Promise.allSettled([
@@ -342,7 +343,7 @@ export class FindingNotifierService {
       ]);
     } catch (error) {
       this.logger.error(
-        `Failed to send notification to ${recipient.email}:`,
+        `Failed to send notification to ${maskEmail(recipient.email)}:`,
         error instanceof Error ? error.message : 'Unknown error',
       );
     }
@@ -395,10 +396,10 @@ export class FindingNotifierService {
         system: true,
       });
 
-      this.logger.log(`Email sent to ${recipient.email} (ID: ${id})`);
+      this.logger.log(`Email sent to ${maskEmail(recipient.email)} (ID: ${id})`);
     } catch (error) {
       this.logger.error(
-        `Failed to send email to ${recipient.email}:`,
+        `Failed to send email to ${maskEmail(recipient.email)}:`,
         error instanceof Error ? error.message : 'Unknown error',
       );
     }

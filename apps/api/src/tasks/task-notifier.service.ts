@@ -2,6 +2,7 @@ import { db } from '@db';
 import { Injectable, Logger } from '@nestjs/common';
 import { TaskStatus } from '@db';
 import { isUserUnsubscribed } from '@trycompai/email';
+import { maskEmail } from '@trycompai/utils/data-masking';
 import { sendEmail } from '../email/resend';
 import { TaskBulkStatusChangedEmail } from '../email/templates/task-bulk-status-changed';
 import { TaskBulkAssigneeChangedEmail } from '../email/templates/task-bulk-assignee-changed';
@@ -151,7 +152,7 @@ export class TaskNotifierService {
 
           if (isUnsubscribed) {
             this.logger.log(
-              `Skipping notification: user ${recipient.email} is unsubscribed from task assignments`,
+              `Skipping notification: user ${maskEmail(recipient.email)} is unsubscribed from task assignments`,
             );
             return;
           }
@@ -174,11 +175,11 @@ export class TaskNotifierService {
             });
 
             this.logger.log(
-              `Bulk status change email sent to ${recipient.email} (ID: ${id})`,
+              `Bulk status change email sent to ${maskEmail(recipient.email)} (ID: ${id})`,
             );
           } catch (error) {
             this.logger.error(
-              `Failed to send bulk status change email to ${recipient.email}:`,
+              `Failed to send bulk status change email to ${maskEmail(recipient.email)}:`,
               error instanceof Error ? error.message : 'Unknown error',
             );
           }
@@ -350,7 +351,7 @@ export class TaskNotifierService {
 
           if (isUnsubscribed) {
             this.logger.log(
-              `Skipping notification: user ${recipient.email} is unsubscribed from task assignments`,
+              `Skipping notification: user ${maskEmail(recipient.email)} is unsubscribed from task assignments`,
             );
             return;
           }
@@ -373,11 +374,11 @@ export class TaskNotifierService {
             });
 
             this.logger.log(
-              `Bulk assignee change email sent to ${recipient.email} (ID: ${id})`,
+              `Bulk assignee change email sent to ${maskEmail(recipient.email)} (ID: ${id})`,
             );
           } catch (error) {
             this.logger.error(
-              `Failed to send bulk assignee change email to ${recipient.email}:`,
+              `Failed to send bulk assignee change email to ${maskEmail(recipient.email)}:`,
               error instanceof Error ? error.message : 'Unknown error',
             );
           }
@@ -539,7 +540,7 @@ export class TaskNotifierService {
 
           if (isUnsubscribed) {
             this.logger.log(
-              `Skipping notification: user ${recipient.email} is unsubscribed from task assignments`,
+              `Skipping notification: user ${maskEmail(recipient.email)} is unsubscribed from task assignments`,
             );
             return;
           }
@@ -562,10 +563,10 @@ export class TaskNotifierService {
               system: true,
             });
 
-            this.logger.log(`Status change email sent to ${recipient.email} (ID: ${id})`);
+            this.logger.log(`Status change email sent to ${maskEmail(recipient.email)} (ID: ${id})`);
           } catch (error) {
             this.logger.error(
-              `Failed to send status change email to ${recipient.email}:`,
+              `Failed to send status change email to ${maskEmail(recipient.email)}:`,
               error instanceof Error ? error.message : 'Unknown error',
             );
           }
@@ -768,7 +769,7 @@ export class TaskNotifierService {
 
           if (isUnsubscribed) {
             this.logger.log(
-              `Skipping notification: user ${recipient.email} is unsubscribed from task assignments`,
+              `Skipping notification: user ${maskEmail(recipient.email)} is unsubscribed from task assignments`,
             );
             return;
           }
@@ -791,10 +792,10 @@ export class TaskNotifierService {
               system: true,
             });
 
-            this.logger.log(`Assignee change email sent to ${recipient.email} (ID: ${id})`);
+            this.logger.log(`Assignee change email sent to ${maskEmail(recipient.email)} (ID: ${id})`);
           } catch (error) {
             this.logger.error(
-              `Failed to send assignee change email to ${recipient.email}:`,
+              `Failed to send assignee change email to ${maskEmail(recipient.email)}:`,
               error instanceof Error ? error.message : 'Unknown error',
             );
           }

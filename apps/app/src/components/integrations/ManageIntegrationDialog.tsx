@@ -233,7 +233,7 @@ export function ManageIntegrationDialog({
         `/v1/integrations/checks/connections/${connectionId}`,
       );
 
-      const checksAvailable = checksResponse.data?.checks && checksResponse.data.checks.length > 0;
+      const checksAvailable = !!(checksResponse.data?.checks && checksResponse.data.checks.length > 0);
       setHasChecks(checksAvailable);
 
       if (!checksAvailable) {

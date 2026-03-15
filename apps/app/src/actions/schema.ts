@@ -241,9 +241,9 @@ export const createPolicySchema = z.object({
 export type CreatePolicySchema = z.infer<typeof createPolicySchema>;
 
 export const updatePolicySchema = z.object({
-  id: z.string(),
-  content: z.any(),
-  entityId: z.string(),
+  id: z.string().min(1),
+  content: z.union([z.string(), z.record(z.unknown())]),
+  entityId: z.string().min(1),
 });
 
 export const addFrameworksSchema = z.object({
@@ -337,16 +337,16 @@ export const addCommentSchema = z.object({
 });
 
 export const createContextEntrySchema = z.object({
-  question: z.string().min(1, 'Question is required'),
-  answer: z.string().min(1, 'Answer is required'),
-  tags: z.string().optional(), // comma separated
+  question: z.string().min(1, 'Question is required').max(500, 'Question is too long'),
+  answer: z.string().min(1, 'Answer is required').max(10000, 'Answer is too long'),
+  tags: z.string().max(500, 'Tags string is too long').optional(), // comma separated
 });
 
 export const updateContextEntrySchema = z.object({
   id: z.string().min(1, 'ID is required'),
-  question: z.string().min(1, 'Question is required'),
-  answer: z.string().min(1, 'Answer is required'),
-  tags: z.string().optional(),
+  question: z.string().min(1, 'Question is required').max(500, 'Question is too long'),
+  answer: z.string().min(1, 'Answer is required').max(10000, 'Answer is too long'),
+  tags: z.string().max(500, 'Tags string is too long').optional(),
 });
 
 export const deleteContextEntrySchema = z.object({
@@ -355,25 +355,50 @@ export const deleteContextEntrySchema = z.object({
 
 // Comment schemas for the new generic comments API
 export const createCommentSchema = z.object({
-  content: z.string().min(1, 'Comment content is required'),
-  entityId: z.string(),
+  content: z
+    .string()
+    .min(1, 'Comment content is required')
+    .max(2000, 'Comment content should be at most 2000 characters')
+    .transform((val) => {
+      let sanitized = val;
+      let previousValue;
+      do {
+        previousValue = sanitized;
+        sanitized = sanitized.replace(/<[^>]*>/g, '');
+      } while (sanitized !== previousValue);
+      return sanitized;
+    }),
+  entityId: z.string().min(1),
   entityType: z.nativeEnum(CommentEntityType),
   attachments: z
     .array(
       z.object({
-        fileName: z.string(),
-        fileType: z.string(),
+        fileName: z.string().max(255),
+        fileType: z.string().max(100),
         fileData: z.string(), // base64
       }),
     )
+    .max(10)
     .optional(),
 });
 
 export type CreateCommentSchema = z.infer<typeof createCommentSchema>;
 
 export const updateCommentSchema = z.object({
-  commentId: z.string(),
-  content: z.string().min(1, 'Comment content is required'),
+  commentId: z.string().min(1),
+  content: z
+    .string()
+    .min(1, 'Comment content is required')
+    .max(2000, 'Comment content should be at most 2000 characters')
+    .transform((val) => {
+      let sanitized = val;
+      let previousValue;
+      do {
+        previousValue = sanitized;
+        sanitized = sanitized.replace(/<[^>]*>/g, '');
+      } while (sanitized !== previousValue);
+      return sanitized;
+    }),
 });
 
 export type UpdateCommentSchema = z.infer<typeof updateCommentSchema>;

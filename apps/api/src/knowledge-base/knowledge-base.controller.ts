@@ -7,13 +7,17 @@ import {
   Query,
   HttpCode,
   HttpStatus,
+  UseGuards,
 } from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
   ApiOkResponse,
   ApiConsumes,
+  ApiSecurity,
+  ApiHeader,
 } from '@nestjs/swagger';
+import { HybridAuthGuard } from '../auth/hybrid-auth.guard';
 import { KnowledgeBaseService } from './knowledge-base.service';
 import { UploadDocumentDto } from './dto/upload-document.dto';
 import { DeleteDocumentDto } from './dto/delete-document.dto';
@@ -24,6 +28,14 @@ import { DeleteAllManualAnswersDto } from './dto/delete-all-manual-answers.dto';
 
 @Controller({ path: 'knowledge-base', version: '1' })
 @ApiTags('Knowledge Base')
+@UseGuards(HybridAuthGuard)
+@ApiSecurity('apikey')
+@ApiHeader({
+  name: 'X-Organization-Id',
+  description:
+    'Organization ID (required for session auth, optional for API key auth)',
+  required: false,
+})
 export class KnowledgeBaseController {
   constructor(private readonly knowledgeBaseService: KnowledgeBaseService) {}
 

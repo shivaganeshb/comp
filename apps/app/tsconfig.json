@@ -112,6 +112,12 @@
       ],
       "@trycompai/email/*": [
         "../../packages/email/*"
+      ],
+      "@trycompai/utils": [
+        "../../packages/utils/src/index.ts"
+      ],
+      "@trycompai/utils/*": [
+        "../../packages/utils/src/*"
       ]
     }
   },

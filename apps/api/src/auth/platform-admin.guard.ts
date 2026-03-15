@@ -146,7 +146,7 @@ export class PlatformAdminGuard implements CanActivate {
         isPlatformAdmin: user.isPlatformAdmin,
       };
     } catch (error) {
-      console.error('[PlatformAdminGuard] JWT verification failed:', error);
+      console.error('[PlatformAdminGuard] JWT verification failed (details redacted for security)');
       return null;
     }
   }

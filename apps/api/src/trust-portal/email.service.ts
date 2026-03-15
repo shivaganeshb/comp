@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { maskEmail } from '@trycompai/utils/data-masking';
 import { sendEmail } from '../email/resend';
 import { AccessGrantedEmail } from '../email/templates/access-granted';
 import { AccessReclaimEmail } from '../email/templates/access-reclaim';
@@ -28,7 +29,7 @@ export class TrustEmailService {
       system: true,
     });
 
-    this.logger.log(`NDA signing email sent to ${toEmail} (ID: ${id})`);
+    this.logger.log(`NDA signing email sent to ${maskEmail(toEmail)} (ID: ${id})`);
   }
 
   async sendAccessGrantedEmail(params: {
@@ -52,7 +53,7 @@ export class TrustEmailService {
       system: true,
     });
 
-    this.logger.log(`Access granted email sent to ${toEmail} (ID: ${id})`);
+    this.logger.log(`Access granted email sent to ${maskEmail(toEmail)} (ID: ${id})`);
   }
 
   async sendAccessReclaimEmail(params: {
@@ -76,7 +77,7 @@ export class TrustEmailService {
       system: true,
     });
 
-    this.logger.log(`Access reclaim email sent to ${toEmail} (ID: ${id})`);
+    this.logger.log(`Access reclaim email sent to ${maskEmail(toEmail)} (ID: ${id})`);
   }
 
   async sendAccessRequestNotification(params: {
@@ -119,7 +120,7 @@ export class TrustEmailService {
     });
 
     this.logger.log(
-      `Access request notification sent to ${toEmail} for requester ${requesterEmail} (ID: ${id})`,
+      `Access request notification sent to ${maskEmail(toEmail)} for requester ${maskEmail(requesterEmail)} (ID: ${id})`,
     );
   }
 }

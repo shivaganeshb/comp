@@ -8,6 +8,8 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  Max,
+  MaxLength,
   Min,
 } from 'class-validator';
 
@@ -15,31 +17,37 @@ export class CreateAccessRequestDto {
   @ApiProperty()
   @IsString()
   @IsNotEmpty()
+  @MaxLength(255)
   name: string;
 
   @ApiProperty()
   @IsEmail()
   @IsNotEmpty()
+  @MaxLength(320)
   email: string;
 
   @ApiPropertyOptional()
   @IsString()
   @IsOptional()
+  @MaxLength(255)
   company?: string;
 
   @ApiPropertyOptional()
   @IsString()
   @IsOptional()
+  @MaxLength(255)
   jobTitle?: string;
 
   @ApiPropertyOptional()
   @IsString()
   @IsOptional()
+  @MaxLength(1000)
   purpose?: string;
 
   @ApiPropertyOptional({ minimum: 1 })
   @IsInt()
   @Min(1)
+  @Max(365)
   @IsOptional()
   requestedDurationDays?: number;
 }
@@ -48,6 +56,7 @@ export class ApproveAccessRequestDto {
   @ApiPropertyOptional({ minimum: 1 })
   @IsInt()
   @Min(1)
+  @Max(365)
   @IsOptional()
   durationDays?: number;
 }
@@ -56,6 +65,7 @@ export class DenyAccessRequestDto {
   @ApiProperty()
   @IsString()
   @IsNotEmpty()
+  @MaxLength(1000)
   reason: string;
 }
 
@@ -63,6 +73,7 @@ export class RevokeGrantDto {
   @ApiProperty()
   @IsString()
   @IsNotEmpty()
+  @MaxLength(1000)
   reason: string;
 }
 

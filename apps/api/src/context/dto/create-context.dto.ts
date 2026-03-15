@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsOptional, IsArray } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsArray, MaxLength } from 'class-validator';
 
 export class CreateContextDto {
   @ApiProperty({
@@ -8,6 +8,7 @@ export class CreateContextDto {
   })
   @IsString()
   @IsNotEmpty()
+  @MaxLength(500)
   question: string;
 
   @ApiProperty({
@@ -17,6 +18,7 @@ export class CreateContextDto {
   })
   @IsString()
   @IsNotEmpty()
+  @MaxLength(10000)
   answer: string;
 
   @ApiProperty({

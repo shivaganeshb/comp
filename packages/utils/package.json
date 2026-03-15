@@ -7,7 +7,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./envs": "./src/envs.ts",
-    "./format": "./src/format.ts"
+    "./format": "./src/format.ts",
+    "./data-masking": "./src/data-masking.ts"
   },
   "main": "src/index.ts",
   "private": true,

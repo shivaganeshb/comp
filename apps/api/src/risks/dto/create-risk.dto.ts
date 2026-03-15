@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsOptional, IsEnum } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsEnum, MaxLength } from 'class-validator';
 import {
   RiskCategory,
   Departments,
@@ -16,6 +16,7 @@ export class CreateRiskDto {
   })
   @IsString()
   @IsNotEmpty()
+  @MaxLength(255)
   title: string;
 
   @ApiProperty({
@@ -25,6 +26,7 @@ export class CreateRiskDto {
   })
   @IsString()
   @IsNotEmpty()
+  @MaxLength(5000)
   description: string;
 
   @ApiProperty({
@@ -103,6 +105,7 @@ export class CreateRiskDto {
   })
   @IsOptional()
   @IsString()
+  @MaxLength(5000)
   treatmentStrategyDescription?: string;
 
   @ApiProperty({

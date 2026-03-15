@@ -1,8 +1,197 @@
 version: 2
 updates:
+  # Root package.json
   - package-ecosystem: npm
     directory: '/'
     schedule:
-      interval: daily
+      interval: weekly
+      day: monday
     target-branch: 'main'
-    open-pull-requests-limit: 3
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # apps/api
+  - package-ecosystem: npm
+    directory: '/apps/api'
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: 'main'
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # apps/app
+  - package-ecosystem: npm
+    directory: '/apps/app'
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: 'main'
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # apps/portal
+  - package-ecosystem: npm
+    directory: '/apps/portal'
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: 'main'
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # packages/analytics
+  - package-ecosystem: npm
+    directory: '/packages/analytics'
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: 'main'
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # packages/db
+  - package-ecosystem: npm
+    directory: '/packages/db'
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: 'main'
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # packages/email
+  - package-ecosystem: npm
+    directory: '/packages/email'
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: 'main'
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # packages/integration-platform
+  - package-ecosystem: npm
+    directory: '/packages/integration-platform'
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: 'main'
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # packages/integrations
+  - package-ecosystem: npm
+    directory: '/packages/integrations'
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: 'main'
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # packages/kv
+  - package-ecosystem: npm
+    directory: '/packages/kv'
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: 'main'
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # packages/storage
+  - package-ecosystem: npm
+    directory: '/packages/storage'
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: 'main'
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # packages/ui
+  - package-ecosystem: npm
+    directory: '/packages/ui'
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: 'main'
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # packages/utils
+  - package-ecosystem: npm
+    directory: '/packages/utils'
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: 'main'
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: 'main'
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        update-types:
+          - minor
+          - patch

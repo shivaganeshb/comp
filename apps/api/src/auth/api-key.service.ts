@@ -106,7 +106,7 @@ export class ApiKeyService {
       // Return the organization ID
       return matchingRecord.organizationId;
     } catch (error) {
-      this.logger.error('Error validating API key:', error);
+      this.logger.error('Error validating API key:', error instanceof Error ? error.message : 'Unknown error');
       return null;
     }
   }

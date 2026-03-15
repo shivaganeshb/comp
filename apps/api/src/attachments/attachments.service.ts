@@ -372,6 +372,18 @@ export class AttachmentsService {
     return this.generateSignedUrl(storageKey);
   }
 
+  async getPresignedDownloadUrlWithFilename(storageKey: string, filename: string): Promise<string> {
+    // Sanitize filename to prevent Content-Disposition header injection
+    const safeName = sanitizeHeaderValue(filename).replace(/"/g, '\\"');
+    return this.storageProvider.getSignedUrl({
+      bucket: this.bucketName,
+      key: storageKey,
+      operation: 'read',
+      expiresIn: this.SIGNED_URL_EXPIRY,
+      contentDisposition: `attachment; filename="${safeName}"`,
+    });
+  }
+
   async getObjectBuffer(storageKey: string): Promise<Buffer> {
     return this.storageProvider.download({
       bucket: this.bucketName,

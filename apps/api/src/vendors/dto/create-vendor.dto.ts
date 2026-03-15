@@ -5,6 +5,7 @@ import {
   IsOptional,
   IsEnum,
   IsUrl,
+  MaxLength,
 } from 'class-validator';
 import {
   VendorCategory,
@@ -20,6 +21,7 @@ export class CreateVendorDto {
   })
   @IsString()
   @IsNotEmpty()
+  @MaxLength(255)
   name: string;
 
   @ApiProperty({
@@ -29,6 +31,7 @@ export class CreateVendorDto {
   })
   @IsString()
   @IsNotEmpty()
+  @MaxLength(5000)
   description: string;
 
   @ApiProperty({

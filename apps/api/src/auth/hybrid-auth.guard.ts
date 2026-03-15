@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { db } from '@trycompai/db';
+import { maskEmail, maskApiKey } from '@trycompai/utils/data-masking';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import { ApiKeyService } from './api-key.service';
 import type { BetterAuthConfig } from '../config/better-auth.config';
@@ -196,7 +197,7 @@ export class HybridAuthGuard implements CanActivate {
 
       return true;
     } catch (error) {
-      console.error('JWT verification failed:', error);
+      console.error('[HybridAuthGuard] JWT verification failed (token and user details redacted)');
 
       // Provide more helpful error messages
       if (error instanceof Error) {
@@ -259,7 +260,7 @@ export class HybridAuthGuard implements CanActivate {
       // User must be a member of the organization
       return !!member;
     } catch (error: unknown) {
-      console.error('Error verifying user organization access:', error);
+      console.error('[HybridAuthGuard] Error verifying user organization access');
       return false;
     }
   }
