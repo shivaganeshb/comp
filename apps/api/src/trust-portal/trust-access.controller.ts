@@ -12,7 +12,6 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
-  ApiHeader,
   ApiOperation,
   ApiParam,
   ApiQuery,
@@ -21,6 +20,8 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { HybridAuthGuard } from '../auth/hybrid-auth.guard';
+import { PermissionGuard } from '../auth/permission.guard';
+import { RequirePermission } from '../auth/require-permission.decorator';
 import { OrganizationId } from '../auth/auth-context.decorator';
 import { AuthenticatedRequest } from '../auth/types';
 import {
@@ -77,13 +78,9 @@ export class TrustAccessController {
   }
 
   @Get('admin/requests')
-  @UseGuards(HybridAuthGuard)
+  @UseGuards(HybridAuthGuard, PermissionGuard)
+  @RequirePermission('trust', 'read')
   @ApiSecurity('apikey')
-  @ApiHeader({
-    name: 'X-Organization-Id',
-    description: 'Organization ID',
-    required: true,
-  })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'List access requests',
@@ -101,13 +98,9 @@ export class TrustAccessController {
   }
 
   @Get('admin/requests/:id')
-  @UseGuards(HybridAuthGuard)
+  @UseGuards(HybridAuthGuard, PermissionGuard)
+  @RequirePermission('trust', 'read')
   @ApiSecurity('apikey')
-  @ApiHeader({
-    name: 'X-Organization-Id',
-    description: 'Organization ID',
-    required: true,
-  })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Get access request details',
@@ -125,13 +118,9 @@ export class TrustAccessController {
   }
 
   @Post('admin/requests/:id/approve')
-  @UseGuards(HybridAuthGuard)
+  @UseGuards(HybridAuthGuard, PermissionGuard)
+  @RequirePermission('trust', 'update')
   @ApiSecurity('apikey')
-  @ApiHeader({
-    name: 'X-Organization-Id',
-    description: 'Organization ID',
-    required: true,
-  })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Approve access request',
@@ -164,13 +153,9 @@ export class TrustAccessController {
   }
 
   @Post('admin/requests/:id/deny')
-  @UseGuards(HybridAuthGuard)
+  @UseGuards(HybridAuthGuard, PermissionGuard)
+  @RequirePermission('trust', 'update')
   @ApiSecurity('apikey')
-  @ApiHeader({
-    name: 'X-Organization-Id',
-    description: 'Organization ID',
-    required: true,
-  })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Deny access request',
@@ -200,13 +185,9 @@ export class TrustAccessController {
   }
 
   @Get('admin/grants')
-  @UseGuards(HybridAuthGuard)
+  @UseGuards(HybridAuthGuard, PermissionGuard)
+  @RequirePermission('trust', 'read')
   @ApiSecurity('apikey')
-  @ApiHeader({
-    name: 'X-Organization-Id',
-    description: 'Organization ID',
-    required: true,
-  })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'List access grants',
@@ -218,13 +199,9 @@ export class TrustAccessController {
   }
 
   @Post('admin/grants/:id/revoke')
-  @UseGuards(HybridAuthGuard)
+  @UseGuards(HybridAuthGuard, PermissionGuard)
+  @RequirePermission('trust', 'update')
   @ApiSecurity('apikey')
-  @ApiHeader({
-    name: 'X-Organization-Id',
-    description: 'Organization ID',
-    required: true,
-  })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Revoke access grant',
@@ -254,13 +231,9 @@ export class TrustAccessController {
   }
 
   @Post('admin/grants/:id/resend-access-email')
-  @UseGuards(HybridAuthGuard)
+  @UseGuards(HybridAuthGuard, PermissionGuard)
+  @RequirePermission('trust', 'update')
   @ApiSecurity('apikey')
-  @ApiHeader({
-    name: 'X-Organization-Id',
-    description: 'Organization ID',
-    required: true,
-  })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Resend access granted email',
@@ -345,13 +318,9 @@ export class TrustAccessController {
   }
 
   @Post('admin/requests/:id/resend-nda')
-  @UseGuards(HybridAuthGuard)
+  @UseGuards(HybridAuthGuard, PermissionGuard)
+  @RequirePermission('trust', 'update')
   @ApiSecurity('apikey')
-  @ApiHeader({
-    name: 'X-Organization-Id',
-    description: 'Organization ID',
-    required: true,
-  })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Resend NDA email',
@@ -369,13 +338,9 @@ export class TrustAccessController {
   }
 
   @Post('admin/requests/:id/preview-nda')
-  @UseGuards(HybridAuthGuard)
+  @UseGuards(HybridAuthGuard, PermissionGuard)
+  @RequirePermission('trust', 'read')
   @ApiSecurity('apikey')
-  @ApiHeader({
-    name: 'X-Organization-Id',
-    description: 'Organization ID',
-    required: true,
-  })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Preview NDA PDF',
@@ -636,5 +601,92 @@ export class TrustAccessController {
   })
   async getFaqs(@Param('friendlyUrl') friendlyUrl: string) {
     return this.trustAccessService.getFaqs(friendlyUrl);
+  }
+
+  @Get(':friendlyUrl/overview')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Get overview section for a trust portal',
+    description:
+      'Retrieve the overview/mission text for a published trust portal.',
+  })
+  @ApiParam({
+    name: 'friendlyUrl',
+    description: 'Trust Portal friendly URL or Organization ID',
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'Overview retrieved successfully',
+  })
+  async getPublicOverview(@Param('friendlyUrl') friendlyUrl: string) {
+    return this.trustAccessService.getPublicOverview(friendlyUrl);
+  }
+
+  @Get(':friendlyUrl/custom-links')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Get custom links for a trust portal',
+    description:
+      'Retrieve the custom external links configured for the trust portal.',
+  })
+  @ApiParam({
+    name: 'friendlyUrl',
+    description: 'Trust Portal friendly URL or Organization ID',
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'Custom links retrieved successfully',
+  })
+  async getPublicCustomLinks(@Param('friendlyUrl') friendlyUrl: string) {
+    return this.trustAccessService.getPublicCustomLinks(friendlyUrl);
+  }
+
+  @Get(':friendlyUrl/favicon')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Get favicon URL for a trust portal',
+    description: 'Retrieve the favicon URL for the trust portal.',
+  })
+  @ApiParam({
+    name: 'friendlyUrl',
+    description: 'Trust Portal friendly URL or Organization ID',
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'Favicon URL retrieved successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        faviconUrl: {
+          type: 'string',
+          nullable: true,
+          description: 'Signed URL to the favicon, or null if not set',
+        },
+      },
+    },
+  })
+  async getPublicFavicon(@Param('friendlyUrl') friendlyUrl: string) {
+    const faviconUrl =
+      await this.trustAccessService.getPublicFavicon(friendlyUrl);
+    return { faviconUrl };
+  }
+
+  @Get(':friendlyUrl/vendors')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Get vendors/subprocessors for a trust portal',
+    description:
+      'Retrieve the list of vendors configured to display on the trust portal.',
+  })
+  @ApiParam({
+    name: 'friendlyUrl',
+    description: 'Trust Portal friendly URL or Organization ID',
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'Vendors retrieved successfully',
+  })
+  async getPublicVendors(@Param('friendlyUrl') friendlyUrl: string) {
+    return this.trustAccessService.getPublicVendors(friendlyUrl);
   }
 }

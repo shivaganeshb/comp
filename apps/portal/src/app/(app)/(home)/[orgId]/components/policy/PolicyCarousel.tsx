@@ -1,16 +1,18 @@
 'use client';
 
-import { Button } from '@comp/ui/button';
-import type { Member, Policy } from '@db';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { useAction } from 'next-safe-action/hooks';
+import type { Member, Policy, PolicyVersion } from '@db';
+import { Button, Text } from '@trycompai/design-system';
+import { ChevronLeft, ChevronRight } from '@trycompai/design-system/icons';
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { markPolicyAsCompleted } from '../../../actions/markPolicyAsCompleted';
 import { PolicyCard } from './PolicyCard';
 
+type PolicyWithVersion = Policy & {
+  currentVersion?: Pick<PolicyVersion, 'id' | 'content' | 'pdfUrl' | 'version'> | null;
+};
+
 interface PolicyCarouselProps {
-  policies: Policy[];
+  policies: PolicyWithVersion[];
   member: Member;
   initialIndex?: number;
   onIndexChange?: (index: number) => void;
@@ -24,14 +26,23 @@ export function PolicyCarousel({
 }: PolicyCarouselProps) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
-  const onCompletePolicy = useAction(markPolicyAsCompleted, {
-    onSuccess: () => {
+
+  const handleCompletePolicy = async (policyId: string) => {
+    try {
+      const res = await fetch('/api/portal/mark-policy-completed', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ policyId }),
+      });
+      if (!res.ok) {
+        throw new Error('Failed to complete policy');
+      }
       toast.success('Policy completed');
-    },
-    onError: () => {
+    } catch {
       toast.error('Failed to complete policy');
-    },
-  });
+    }
+  };
 
   const scrollToIndex = (index: number) => {
     if (!scrollContainerRef.current) return;
@@ -83,7 +94,7 @@ export function PolicyCarousel({
     <div className="w-full space-y-4">
       <div
         ref={scrollContainerRef}
-        className="flex snap-x snap-mandatory overflow-x-hidden scroll-smooth"
+        className="flex snap-x snap-mandatory overflow-x-auto scroll-smooth"
         onScroll={handleScroll}
       >
         {policies.map((policy) => (
@@ -91,7 +102,7 @@ export function PolicyCarousel({
             <PolicyCard
               policy={policy}
               onNext={handleNext}
-              onComplete={() => onCompletePolicy.execute({ policyId: policy.id })}
+              onComplete={() => handleCompletePolicy(policy.id)}
               onClick={() => handleNext()}
               member={member}
               isLastPolicy={currentIndex === policies.length - 1}
@@ -106,18 +117,18 @@ export function PolicyCarousel({
           onClick={handlePrevious}
           disabled={currentIndex === 0}
         >
-          <ChevronLeft className="h-4 w-4" />
+          <ChevronLeft size={16} />
         </Button>
-        <span className="text-muted-foreground text-sm">
+        <Text variant="muted" size="sm">
           Policy {currentIndex + 1} of {policies.length}
-        </span>
+        </Text>
         <Button
           variant="outline"
           size="icon"
           onClick={handleNext}
           disabled={currentIndex === policies.length - 1}
         >
-          <ChevronRight className="h-4 w-4" />
+          <ChevronRight size={16} />
         </Button>
       </div>
     </div>

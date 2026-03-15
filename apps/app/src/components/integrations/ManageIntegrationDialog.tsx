@@ -4,7 +4,6 @@ import {
   useIntegrationConnections,
   useIntegrationMutations,
 } from '@/hooks/use-integration-platform';
-import { api } from '@/lib/api-client';
 import { Button } from '@comp/ui/button';
 import { ComboboxDropdown } from '@comp/ui/combobox-dropdown';
 import {
@@ -20,6 +19,7 @@ import { Label } from '@comp/ui/label';
 import MultipleSelector from '@comp/ui/multiple-selector';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@comp/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@comp/ui/tabs';
+<<<<<<< HEAD
 import {
   AlertTriangle,
   CheckCircle2,
@@ -31,6 +31,9 @@ import {
   Unplug,
   Zap,
 } from 'lucide-react';
+=======
+import { Key, Loader2, Settings, Trash2, X } from 'lucide-react';
+>>>>>>> upstream/main
 import Image from 'next/image';
 import { useParams } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -151,6 +154,56 @@ interface ManageIntegrationDialogProps {
   onSaved?: () => void;
 }
 
+<<<<<<< HEAD
+=======
+const validateTargetRepos = (
+  values: Record<string, string | number | boolean | string[]>,
+): boolean => {
+  const targetReposValue = values.target_repos;
+  if (!Array.isArray(targetReposValue) || targetReposValue.length === 0) {
+    return true;
+  }
+  for (const value of targetReposValue) {
+    const stringValue = String(value ?? '').trim();
+    if (!stringValue) {
+      return false;
+    }
+    const colonIndex = stringValue.lastIndexOf(':');
+    if (colonIndex === 0) {
+      return false;
+    }
+    if (colonIndex > 0) {
+      const repo = stringValue.substring(0, colonIndex).trim();
+      if (!repo) {
+        return false;
+      }
+    }
+  }
+  return true;
+};
+
+const normalizeMultiSelectValue = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return Array.from(
+      new Set(value.map((item) => String(item).trim()).filter((item) => item.length > 0)),
+    );
+  }
+
+  if (typeof value === 'string') {
+    return Array.from(
+      new Set(
+        value
+          .split(/[\n,;]+/)
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0),
+      ),
+    );
+  }
+
+  return [];
+};
+
+>>>>>>> upstream/main
 export function ManageIntegrationDialog({
   open,
   onOpenChange,
@@ -165,7 +218,18 @@ export function ManageIntegrationDialog({
   onSaved,
 }: ManageIntegrationDialogProps) {
   const { orgId } = useParams<{ orgId: string }>();
+<<<<<<< HEAD
   const { disconnectConnection, deleteConnection } = useIntegrationMutations();
+=======
+  const {
+    deleteConnection,
+    updateConnectionCredentials,
+    getConnectionDetails,
+    getConnectionVariables,
+    saveConnectionVariables,
+    getVariableOptions,
+  } = useIntegrationMutations();
+>>>>>>> upstream/main
   const { refresh: refreshConnections } = useIntegrationConnections();
 
   // Variables state
@@ -182,7 +246,11 @@ export function ManageIntegrationDialog({
 
   // Credentials state (for custom auth integrations)
   const [credentialFields, setCredentialFields] = useState<CredentialField[]>([]);
+<<<<<<< HEAD
   const [credentialValues, setCredentialValues] = useState<Record<string, string>>({});
+=======
+  const [credentialValues, setCredentialValues] = useState<Record<string, string | string[]>>({});
+>>>>>>> upstream/main
   const [savingCredentials, setSavingCredentials] = useState(false);
   const [authStrategy, setAuthStrategy] = useState<string>('');
 
@@ -204,23 +272,27 @@ export function ManageIntegrationDialog({
     if (!connectionId || !orgId) return;
 
     try {
-      const response = await api.get<ConnectionDetailsResponse>(
-        `/v1/integrations/connections/${connectionId}?organizationId=${orgId}`,
-      );
-      if (response.data) {
-        setAuthStrategy(response.data.authStrategy || '');
-        setCredentialFields(response.data.credentialFields || []);
+      const result = await getConnectionDetails<ConnectionDetailsResponse>(connectionId);
+      if (result.data) {
+        setAuthStrategy(result.data.authStrategy || '');
+        setCredentialFields(result.data.credentialFields || []);
         // Initialize empty credential values (we don't show existing values for security)
+<<<<<<< HEAD
         const initialValues: Record<string, string> = {};
         for (const field of response.data.credentialFields || []) {
           initialValues[field.id] = '';
+=======
+        const initialValues: Record<string, string | string[]> = {};
+        for (const field of result.data.credentialFields || []) {
+          initialValues[field.id] = field.type === 'multi-select' ? [] : '';
+>>>>>>> upstream/main
         }
         setCredentialValues(initialValues);
       }
     } catch {
       // Silently fail - credential editing may not be available
     }
-  }, [connectionId, orgId]);
+  }, [connectionId, orgId, getConnectionDetails]);
 
   // Fetch last check run results
   const loadCheckResults = useCallback(async () => {
@@ -289,27 +361,32 @@ export function ManageIntegrationDialog({
     setLoadingVariables(true);
     setDynamicOptions({});
     try {
-      const response = await api.get<VariablesResponse>(
-        `/v1/integrations/variables/connections/${connectionId}?organizationId=${orgId}`,
-      );
-      if (response.data) {
-        const vars = response.data.variables || [];
+      const result = await getConnectionVariables<VariablesResponse>(connectionId);
+      if (result.data) {
+        const vars = result.data.variables || [];
         setVariables(vars);
         // Extract current values from each variable
         const values: Record<string, string | number | boolean | string[]> = {};
         for (const v of vars) {
           if (v.currentValue !== undefined) {
-            values[v.id] = v.currentValue;
+            if (v.type === 'multi-select') {
+              values[v.id] = normalizeMultiSelectValue(v.currentValue);
+            } else {
+              values[v.id] = v.currentValue;
+            }
           }
         }
         setVariableValues(values);
+      }
+      if (result.error) {
+        toast.error('Failed to load configuration');
       }
     } catch {
       toast.error('Failed to load configuration');
     } finally {
       setLoadingVariables(false);
     }
-  }, [connectionId, orgId]);
+  }, [connectionId, orgId, getConnectionVariables]);
 
   useEffect(() => {
     if (open && connectionId) {
@@ -327,11 +404,12 @@ export function ManageIntegrationDialog({
 
       setLoadingDynamicOptions((prev) => ({ ...prev, [variableId]: true }));
       try {
-        const response = await api.get<{ options: { value: string; label: string }[] }>(
-          `/v1/integrations/variables/connections/${connectionId}/options/${variableId}?organizationId=${orgId}`,
-        );
-        if (response.data?.options) {
-          setDynamicOptions((prev) => ({ ...prev, [variableId]: response.data!.options }));
+        const result = await getVariableOptions(connectionId, variableId);
+        if (result.options) {
+          setDynamicOptions((prev) => ({ ...prev, [variableId]: result.options! }));
+        }
+        if (result.error) {
+          toast.error('Failed to load options');
         }
       } catch {
         toast.error('Failed to load options');
@@ -339,7 +417,7 @@ export function ManageIntegrationDialog({
         setLoadingDynamicOptions((prev) => ({ ...prev, [variableId]: false }));
       }
     },
-    [connectionId, orgId],
+    [connectionId, orgId, getVariableOptions],
   );
 
   const handleSaveVariables = async () => {
@@ -347,13 +425,14 @@ export function ManageIntegrationDialog({
 
     setSavingVariables(true);
     try {
-      await api.post(
-        `/v1/integrations/variables/connections/${connectionId}?organizationId=${orgId}`,
-        { variables: variableValues },
-      );
-      toast.success('Configuration saved');
-      refreshConnections();
-      onSaved?.();
+      const result = await saveConnectionVariables(connectionId, variableValues);
+      if (!result.success) {
+        toast.error(result.error || 'Failed to save configuration');
+      } else {
+        toast.success('Configuration saved');
+        refreshConnections();
+        onSaved?.();
+      }
     } catch {
       toast.error('Failed to save configuration');
     } finally {
@@ -381,6 +460,7 @@ export function ManageIntegrationDialog({
 
     setSavingCredentials(true);
     try {
+<<<<<<< HEAD
       await api.put(
         `/v1/integrations/connections/${connectionId}/credentials?organizationId=${orgId}`,
         { credentials: credentialsToSave },
@@ -396,6 +476,24 @@ export function ManageIntegrationDialog({
         return cleared;
       });
       onSaved?.();
+=======
+      const result = await updateConnectionCredentials(connectionId, credentialsToSave);
+      if (!result.success) {
+        toast.error(result.error || 'Failed to update credentials');
+      } else {
+        toast.success('Credentials updated');
+        refreshConnections();
+        // Clear the form
+        setCredentialValues((prev) => {
+          const cleared: Record<string, string | string[]> = {};
+          for (const key of Object.keys(prev)) {
+            cleared[key] = Array.isArray(prev[key]) ? [] : '';
+          }
+          return cleared;
+        });
+        onSaved?.();
+      }
+>>>>>>> upstream/main
     } catch {
       toast.error('Failed to update credentials');
     } finally {
@@ -619,10 +717,39 @@ function ConfigurationContent({
     );
   }
 
+  const syncModeVariable = variables.find((variable) => variable.id === 'sync_user_filter_mode');
+  const hasSyncModeVariable = Boolean(syncModeVariable);
+  const rawSyncMode = variableValues.sync_user_filter_mode ?? syncModeVariable?.default ?? 'all';
+  const effectiveSyncMode = String(rawSyncMode).toLowerCase();
+  const hasSyncScopedFields =
+    hasSyncModeVariable &&
+    variables.some(
+      (variable) =>
+        variable.id === 'sync_excluded_emails' || variable.id === 'sync_included_emails',
+    );
+
+  const shouldShowVariable = (variable: CheckVariable): boolean => {
+    if (variable.id === 'sync_excluded_emails' && hasSyncModeVariable) {
+      return effectiveSyncMode === 'exclude';
+    }
+
+    if (variable.id === 'sync_included_emails' && hasSyncModeVariable) {
+      return effectiveSyncMode === 'include';
+    }
+
+    return true;
+  };
+
   const variablesContent = hasVariables && (
     <div className="space-y-4">
       {!showTabs && <h4 className="text-sm font-medium">Configuration</h4>}
-      {variables.map((variable) => {
+      {hasSyncScopedFields && effectiveSyncMode === 'all' && (
+        <p className="text-xs text-muted-foreground">
+          Employee sync is set to all users. Include and exclude fields are hidden because they are
+          not used in this mode.
+        </p>
+      )}
+      {variables.filter(shouldShowVariable).map((variable) => {
         const options = dynamicOptions[variable.id] || variable.options || [];
         const isLoadingOptions = loadingDynamicOptions[variable.id];
 
@@ -816,6 +943,7 @@ function ConfigurationContent({
               );
             })()
           ) : field.type === 'select' && field.options ? (
+<<<<<<< HEAD
             <Select
               value={credentialValues[field.id] || ''}
               onValueChange={(val) => setCredentialValues((prev) => ({ ...prev, [field.id]: val }))}
@@ -831,6 +959,33 @@ function ConfigurationContent({
                 ))}
               </SelectContent>
             </Select>
+=======
+            (() => {
+              const stringValue: string =
+                typeof credentialValues[field.id] === 'string'
+                  ? (credentialValues[field.id] as string)
+                  : '';
+              return (
+                <Select
+                  value={stringValue}
+                  onValueChange={(val) =>
+                    setCredentialValues((prev) => ({ ...prev, [field.id]: val }))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={`Select ${field.label.toLowerCase()}`} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {field.options.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              );
+            })()
+>>>>>>> upstream/main
           ) : (
             <Input
               id={`cred-${field.id}`}
@@ -1035,8 +1190,18 @@ function MultiSelectVariable({
   onLoadOptions: () => void;
 }) {
   const selectedValues = Array.isArray(value) ? value : [];
+  const normalizedSelectedValues = selectedValues
+    .map((item) => String(item).trim())
+    .filter((item) => item.length > 0);
   const hasLoadedRef = useRef(false);
 
+<<<<<<< HEAD
+=======
+  // For target_repos, parse values to extract repos and branches
+  const isGitHubRepos = variable.id === 'target_repos';
+  const parsedConfigs = isGitHubRepos ? normalizedSelectedValues.map(parseRepoBranch) : [];
+
+>>>>>>> upstream/main
   useEffect(() => {
     if (
       variable.hasDynamicOptions &&
@@ -1047,6 +1212,7 @@ function MultiSelectVariable({
       hasLoadedRef.current = true;
       onLoadOptions();
     }
+<<<<<<< HEAD
   }, []);
 
   return (
@@ -1070,5 +1236,115 @@ function MultiSelectVariable({
         )
       }
     />
+=======
+  }, [variable.hasDynamicOptions, options.length, isLoadingOptions, onLoadOptions]);
+
+  // Handle repo selection change
+  const handleRepoSelectionChange = (selectedRepos: string[]) => {
+    if (!isGitHubRepos) {
+      onChange(selectedRepos);
+      return;
+    }
+
+    // For GitHub repos, preserve existing branches when repos are reselected
+    const newValues = selectedRepos
+      .map((repo) => repo.trim())
+      .filter(Boolean)
+      .map((repo) => {
+        // Check if this repo already exists in current values
+        const existing = parsedConfigs.find((c) => c.repo === repo);
+        // Use existing branch, or empty string for new repos (user will type it)
+        return formatRepoBranch(repo, existing?.branch || '');
+      });
+    onChange(newValues);
+  };
+
+  // Handle branch change for a specific repo
+  const handleBranchChange = (repo: string, branch: string) => {
+    const newValues = normalizedSelectedValues.map((v) => {
+      const parsed = parseRepoBranch(v);
+      if (parsed.repo === repo) {
+        // Allow empty string during editing - will default to main on save if empty
+        return formatRepoBranch(repo, branch);
+      }
+      return v;
+    });
+    onChange(newValues);
+  };
+
+  // Handle removing a repo
+  const handleRemoveRepo = (repo: string) => {
+    const newValues = normalizedSelectedValues.filter((v) => parseRepoBranch(v).repo !== repo);
+    onChange(newValues);
+  };
+
+  // Get repos from values for display in multi-select
+  const reposForSelector = isGitHubRepos
+    ? parsedConfigs.map((c) => c.repo)
+    : normalizedSelectedValues;
+  const isCreatable = isGitHubRepos || options.length === 0;
+
+  return (
+    <div className="space-y-3">
+      <MultipleSelector
+        value={reposForSelector.map((v) => ({
+          value: v,
+          label: options.find((o) => o.value === v)?.label || v,
+        }))}
+        onChange={(selected) => handleRepoSelectionChange(selected.map((s) => s.value))}
+        defaultOptions={options.map((o) => ({ value: o.value, label: o.label }))}
+        options={options.map((o) => ({ value: o.value, label: o.label }))}
+        placeholder={variable.placeholder || `Select ${variable.label.toLowerCase()}...`}
+        creatable={isCreatable}
+        emptyIndicator={
+          isLoadingOptions ? (
+            <div className="flex items-center gap-2 py-2 px-3 text-sm text-muted-foreground">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              Loading options...
+            </div>
+          ) : isCreatable ? (
+            <p className="text-center text-sm text-muted-foreground">
+              Type a value and press Enter
+            </p>
+          ) : (
+            <p className="text-center text-sm text-muted-foreground">No options available</p>
+          )
+        }
+      />
+
+      {/* Branch inputs for GitHub repos */}
+      {isGitHubRepos && parsedConfigs.length > 0 && (
+        <div className="space-y-2 rounded-md border border-border bg-muted/30 p-3">
+          <p className="text-xs font-medium text-muted-foreground">
+            Optional: specify branches for each repository (comma-separated). Leave blank to use the
+            default branch (main).
+          </p>
+          {parsedConfigs.map((config) => {
+            return (
+              <div key={config.repo} className="flex items-center gap-2">
+                <span className="shrink-0 rounded bg-secondary px-2 py-1 font-mono text-xs">
+                  {config.repo}
+                </span>
+                <span className="text-muted-foreground">:</span>
+                <Input
+                  value={config.branch}
+                  onChange={(e) => handleBranchChange(config.repo, e.target.value)}
+                  placeholder="main, develop"
+                  className="h-8 flex-1 font-mono text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={() => handleRemoveRepo(config.repo)}
+                  className="shrink-0 rounded p-1 hover:bg-destructive/10 text-muted-foreground hover:text-destructive"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+>>>>>>> upstream/main
   );
 }

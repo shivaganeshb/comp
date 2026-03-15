@@ -1,6 +1,6 @@
 'use client';
 
-import { useDomain } from '@/hooks/use-domain';
+import { DEFAULT_CNAME_TARGET, useDomain } from '@/hooks/use-domain';
 import { Button } from '@comp/ui/button';
 import {
   Card,
@@ -15,13 +15,12 @@ import { Input } from '@comp/ui/input';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@comp/ui/tooltip';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { AlertCircle, CheckCircle, ClipboardCopy, ExternalLink, Loader2 } from 'lucide-react';
-import { useAction } from 'next-safe-action/hooks';
+import { usePermissions } from '@/hooks/use-permissions';
+import { useTrustPortalSettings } from '@/hooks/use-trust-portal-settings';
 import { useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { z } from 'zod';
-import { checkDnsRecordAction } from '../actions/check-dns-record';
-import { customDomainAction } from '../actions/custom-domain';
 
 const trustPortalDomainSchema = z.object({
   domain: z
@@ -29,7 +28,7 @@ const trustPortalDomainSchema = z.object({
     .min(1, 'Domain cannot be empty.')
     .max(63, 'Domain too long. Max 63 chars.')
     .regex(
-      /^(?!-)[A-Za-z0-9-]+([-\.]{1}[a-z0-9]+)*\.[A-Za-z]{2,6}$/,
+      /^(?!-)[A-Za-z0-9-]+([-\.]{1}[a-z0-9]+)*\.[A-Za-z]{2,63}$/,
       'Invalid domain format. Use format like sub.example.com',
     )
     .trim(),
@@ -63,6 +62,13 @@ export function TrustPortalDomain({
     return null;
   }, [domainStatus]);
 
+  // Get the actual CNAME target from Vercel, with fallback
+  // Normalize to include trailing dot for DNS record display
+  const cnameTarget = useMemo(() => {
+    const target = domainStatus?.data?.cnameTarget || DEFAULT_CNAME_TARGET;
+    return target.endsWith('.') ? target : `${target}.`;
+  }, [domainStatus?.data?.cnameTarget]);
+
   useEffect(() => {
     const isCnameVerified = localStorage.getItem(`${initialDomain}-isCnameVerified`);
     const isTxtVerified = localStorage.getItem(`${initialDomain}-isTxtVerified`);
@@ -72,57 +78,11 @@ export function TrustPortalDomain({
     setIsVercelTxtVerified(isVercelTxtVerified === 'true');
   }, [initialDomain]);
 
-  const updateCustomDomain = useAction(customDomainAction, {
-    onSuccess: (data) => {
-      toast.success('Custom domain update submitted, please verify your DNS records.');
-    },
-    onError: (error) => {
-      toast.error(
-        error.error.serverError ||
-          error.error.validationErrors?._errors?.[0] ||
-          'Failed to update custom domain.',
-      );
-    },
-  });
-
-  const checkDnsRecord = useAction(checkDnsRecordAction, {
-    onSuccess: (data) => {
-      if (data?.data?.error) {
-        toast.error(data.data.error);
-
-        if (data.data?.isCnameVerified) {
-          setIsCnameVerified(true);
-          localStorage.setItem(`${initialDomain}-isCnameVerified`, 'true');
-        }
-        if (data.data?.isTxtVerified) {
-          setIsTxtVerified(true);
-          localStorage.setItem(`${initialDomain}-isTxtVerified`, 'true');
-        }
-        if (data.data?.isVercelTxtVerified) {
-          setIsVercelTxtVerified(true);
-          localStorage.setItem(`${initialDomain}-isVercelTxtVerified`, 'true');
-        }
-      } else {
-        if (data.data?.isCnameVerified) {
-          setIsCnameVerified(true);
-          localStorage.removeItem(`${initialDomain}-isCnameVerified`);
-        }
-        if (data.data?.isTxtVerified) {
-          setIsTxtVerified(true);
-          localStorage.removeItem(`${initialDomain}-isTxtVerified`);
-        }
-        if (data.data?.isVercelTxtVerified) {
-          setIsVercelTxtVerified(true);
-          localStorage.removeItem(`${initialDomain}-isVercelTxtVerified`);
-        }
-      }
-    },
-    onError: () => {
-      toast.error(
-        'DNS record verification failed, check the records are valid or try again later.',
-      );
-    },
-  });
+  const { hasPermission } = usePermissions();
+  const canUpdate = hasPermission('trust', 'update');
+  const { submitCustomDomain, checkDns } = useTrustPortalSettings();
+  const [isUpdatingDomain, setIsUpdatingDomain] = useState(false);
+  const [isCheckingDns, setIsCheckingDns] = useState(false);
 
   const form = useForm<z.infer<typeof trustPortalDomainSchema>>({
     resolver: zodResolver(trustPortalDomainSchema),
@@ -140,7 +100,20 @@ export function TrustPortalDomain({
     localStorage.removeItem(`${initialDomain}-isTxtVerified`);
     localStorage.removeItem(`${initialDomain}-isVercelTxtVerified`);
 
-    updateCustomDomain.execute({ domain: data.domain });
+    setIsUpdatingDomain(true);
+    try {
+      const result = await submitCustomDomain(data.domain);
+      if (result && typeof result === 'object' && 'success' in result && result.success === false) {
+        const errorMsg = 'error' in result ? (result.error as string) : 'Failed to update custom domain.';
+        toast.error(errorMsg);
+        return;
+      }
+      toast.success('Custom domain update submitted, please verify your DNS records.');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to update custom domain.');
+    } finally {
+      setIsUpdatingDomain(false);
+    }
   };
 
   const handleCopy = (text: string, type: string) => {
@@ -148,8 +121,45 @@ export function TrustPortalDomain({
     toast.success(`${type} copied to clipboard`);
   };
 
-  const handleCheckDnsRecord = () => {
-    checkDnsRecord.execute({ domain: form.watch('domain') });
+  const handleCheckDnsRecord = async () => {
+    setIsCheckingDns(true);
+    try {
+      const data = await checkDns(form.watch('domain'));
+      if (data && typeof data === 'object' && 'error' in data && data.error) {
+        toast.error(data.error as string);
+        if (data.isCnameVerified) {
+          setIsCnameVerified(true);
+          localStorage.setItem(`${initialDomain}-isCnameVerified`, 'true');
+        }
+        if (data.isTxtVerified) {
+          setIsTxtVerified(true);
+          localStorage.setItem(`${initialDomain}-isTxtVerified`, 'true');
+        }
+        if (data.isVercelTxtVerified) {
+          setIsVercelTxtVerified(true);
+          localStorage.setItem(`${initialDomain}-isVercelTxtVerified`, 'true');
+        }
+      } else if (data && typeof data === 'object') {
+        if (data.isCnameVerified) {
+          setIsCnameVerified(true);
+          localStorage.removeItem(`${initialDomain}-isCnameVerified`);
+        }
+        if (data.isTxtVerified) {
+          setIsTxtVerified(true);
+          localStorage.removeItem(`${initialDomain}-isTxtVerified`);
+        }
+        if (data.isVercelTxtVerified) {
+          setIsVercelTxtVerified(true);
+          localStorage.removeItem(`${initialDomain}-isVercelTxtVerified`);
+        }
+      }
+    } catch {
+      toast.error(
+        'DNS record verification failed, check the records are valid or try again later.',
+      );
+    } finally {
+      setIsCheckingDns(false);
+    }
   };
 
   return (
@@ -202,6 +212,7 @@ export function TrustPortalDomain({
                           autoCapitalize="none"
                           autoCorrect="off"
                           spellCheck="false"
+                          disabled={!canUpdate}
                         />
                       </FormControl>
                       {field.value === initialDomain && initialDomain !== '' && !domainVerified && (
@@ -209,9 +220,9 @@ export function TrustPortalDomain({
                           type="button"
                           className="md:max-w-[300px]"
                           onClick={handleCheckDnsRecord}
-                          disabled={checkDnsRecord.status === 'executing'}
+                          disabled={isCheckingDns}
                         >
-                          {checkDnsRecord.status === 'executing' ? (
+                          {isCheckingDns ? (
                             <Loader2 className="mr-1 h-4 w-4 animate-spin" />
                           ) : null}
                           Check DNS record
@@ -231,7 +242,7 @@ export function TrustPortalDomain({
                       <div className="rounded-md border border-amber-200 bg-amber-100 p-4 dark:border-amber-900 dark:bg-amber-950">
                         <div className="flex gap-3">
                           <AlertCircle className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
-                          <p className="text-amber-100 text-sm dark:text-amber-200">
+                          <p className="text-amber-800 text-sm dark:text-amber-200">
                             This domain is linked to another Vercel account. To use it with this
                             project, add a {verificationInfo.type} record at{' '}
                             {verificationInfo.domain} to verify ownership. You can remove the record
@@ -286,12 +297,12 @@ export function TrustPortalDomain({
                               </td>
                               <td>
                                 <div className="flex items-center justify-between gap-2">
-                                  <span className="min-w-0 break-words">cname.vercel-dns.com.</span>
+                                  <span className="min-w-0 break-words">{cnameTarget}</span>
                                   <Button
                                     variant="ghost"
                                     size="icon"
                                     type="button"
-                                    onClick={() => handleCopy('cname.vercel-dns.com.', 'Value')}
+                                    onClick={() => handleCopy(cnameTarget, 'Value')}
                                     className="h-6 w-6 shrink-0"
                                   >
                                     <ClipboardCopy className="h-4 w-4" />
@@ -411,12 +422,12 @@ export function TrustPortalDomain({
                           <div>
                             <div className="mb-1 font-medium">Value:</div>
                             <div className="flex items-center justify-between gap-2">
-                              <span className="min-w-0 break-words">cname.vercel-dns.com.</span>
+                              <span className="min-w-0 break-words">{cnameTarget}</span>
                               <Button
                                 variant="ghost"
                                 size="icon"
                                 type="button"
-                                onClick={() => handleCopy('cname.vercel-dns.com.', 'Value')}
+                                onClick={() => handleCopy(cnameTarget, 'Value')}
                                 className="h-6 w-6 shrink-0"
                               >
                                 <ClipboardCopy className="h-4 w-4" />
@@ -517,10 +528,10 @@ export function TrustPortalDomain({
             <Button
               type="submit"
               disabled={
-                updateCustomDomain.status === 'executing' || checkDnsRecord.status === 'executing'
+                !canUpdate || isUpdatingDomain || isCheckingDns
               }
             >
-              {updateCustomDomain.status === 'executing' ? (
+              {isUpdatingDomain ? (
                 <Loader2 className="mr-1 h-4 w-4 animate-spin" />
               ) : null}
               {'Save'}

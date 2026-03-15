@@ -1,6 +1,8 @@
 import { db } from '@db';
 import { Novu } from '@novu/api';
 import { logger, schedules } from '@trigger.dev/sdk';
+import { isUserUnsubscribed, TaskStatusNotificationEmail } from '@trycompai/email';
+import { sendEmailViaApi } from '../../lib/send-email-via-api';
 
 import { getTargetStatus } from './task-schedule-helpers';
 
@@ -33,7 +35,11 @@ export const taskSchedule = schedules.task({
             name: true,
             members: {
               where: {
-                role: { contains: 'owner' },
+                deactivated: false,
+                OR: [
+                  { user: { isPlatformAdmin: false } },
+                  { role: { contains: 'owner' } },
+                ],
               },
               select: {
                 user: {
@@ -43,17 +49,6 @@ export const taskSchedule = schedules.task({
                     email: true,
                   },
                 },
-              },
-            },
-          },
-        },
-        assignee: {
-          select: {
-            user: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
               },
             },
           },
@@ -217,22 +212,67 @@ export const taskSchedule = schedules.task({
         }
       };
 
-      // Find recipients (org owner and assignee) for each task and add to recipientsMap
+      // Add all org members as potential recipients for each task.
+      // The notification matrix (isUserUnsubscribed) handles role-based filtering.
       for (const task of allUpdatedTasks) {
-        // Org owners
         if (task.organization && Array.isArray(task.organization.members)) {
           addRecipients(task.organization.members, task);
-        }
-        // Policy assignee
-        if (task.assignee) {
-          addRecipients([task.assignee], task);
         }
       }
 
       // Final deduplicated recipients array.
       const recipients = Array.from(recipientsMap.values());
-      // Trigger notification for each recipient.
-      novu.triggerBulk({
+
+      logger.info(
+        `Sending notifications to ${recipients.length} recipients: ${recipients.map((r) => r.email).join(', ')}`,
+      );
+
+      // Send email notifications to each recipient
+      await Promise.allSettled(
+        recipients.map(async (recipient) => {
+          const taskStatus = tasksToFailed.some((t) => t.id === recipient.task.id)
+            ? ('failed' as const)
+            : ('todo' as const);
+
+          // Check if user is unsubscribed
+          const isUnsubscribed = await isUserUnsubscribed(db, recipient.email, 'taskAssignments', recipient.task.organizationId);
+
+          if (isUnsubscribed) {
+            logger.info(
+              `Skipping notification: user ${recipient.email} is unsubscribed from task assignments`,
+            );
+            return;
+          }
+
+          try {
+            await sendEmailViaApi({
+              to: recipient.email,
+              subject: `Task "${recipient.task.title}" ${taskStatus === 'failed' ? 'failed' : 'needs review'}`,
+              react: TaskStatusNotificationEmail({
+                email: recipient.email,
+                userName: recipient.name,
+                taskName: recipient.task.title,
+                taskStatus,
+                organizationName: recipient.task.organization.name,
+                taskUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? 'https://app.trycomp.ai'}/${recipient.task.organizationId}/tasks/${recipient.task.id}`,
+              }),
+              organizationId: recipient.task.organizationId,
+              system: true,
+            });
+
+            logger.info(
+              `Task notification email sent to ${recipient.email} for task ${recipient.task.id} (status: ${taskStatus})`,
+            );
+          } catch (error) {
+            logger.error(`Failed to send task notification email to ${recipient.email}`, {
+              error: error instanceof Error ? error.message : 'Unknown error',
+            });
+          }
+        }),
+      );
+
+      // Also trigger Novu for in-app notifications
+      await novu.triggerBulk({
         events: recipients.map((recipient) => ({
           workflowId: 'task-review-required',
           to: {

@@ -1,13 +1,13 @@
 'use client';
 
 import { ConnectIntegrationDialog } from '@/components/integrations/ConnectIntegrationDialog';
+import { useApi } from '@/hooks/use-api';
+import { usePermissions } from '@/hooks/use-permissions';
 import { ManageIntegrationDialog } from '@/components/integrations/ManageIntegrationDialog';
-import { api } from '@/lib/api-client';
 import { Button, PageHeader, PageHeaderDescription, PageLayout } from '@trycompai/design-system';
 import { Add, Settings } from '@trycompai/design-system/icons';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import useSWR from 'swr';
 import { isCloudProviderSlug } from '../constants';
 import type { Finding, Provider } from '../types';
 import { CloudSettingsModal } from './CloudSettingsModal';
@@ -45,6 +45,10 @@ const needsVariableConfiguration = (provider: Provider): boolean => {
 };
 
 export function TestsLayout({ initialFindings, initialProviders, orgId }: TestsLayoutProps) {
+  const { hasPermission } = usePermissions();
+  const canRunScan = hasPermission('integration', 'update');
+  const canCreateIntegration = hasPermission('integration', 'create');
+  const api = useApi();
   const [showSettings, setShowSettings] = useState(false);
   const [viewingResults, setViewingResults] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
@@ -56,36 +60,30 @@ export function TestsLayout({ initialFindings, initialProviders, orgId }: TestsL
   const [manageProviderType, setManageProviderType] = useState<string | null>(null);
   const [manageDialogOpen, setManageDialogOpen] = useState(false);
 
-  const { data: findings = initialFindings, mutate: mutateFindings } = useSWR<Finding[]>(
-    `/api/cloud-tests/findings?orgId=${orgId}`,
-    async (url) => {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error('Failed to fetch');
-      return res.json();
-    },
+  const findingsResponse = api.useSWR<{ data: Finding[]; count: number }>(
+    '/v1/cloud-security/findings',
     {
-      fallbackData: initialFindings,
-      refreshInterval: 5000,
+      fallbackData: { data: { data: initialFindings, count: initialFindings.length }, status: 200 },
       revalidateOnFocus: true,
     },
   );
+  const findings = Array.isArray(findingsResponse.data?.data?.data)
+    ? findingsResponse.data.data.data
+    : initialFindings;
+  const mutateFindings = findingsResponse.mutate;
 
-  const {
-    data: providers = initialProviders,
-    mutate: mutateProviders,
-    isValidating: isProvidersValidating,
-  } = useSWR<Provider[]>(
-    `/api/cloud-tests/providers?orgId=${orgId}`,
-    async (url) => {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error('Failed to fetch');
-      return res.json();
-    },
+  const providersResponse = api.useSWR<{ data: Provider[]; count: number }>(
+    '/v1/cloud-security/providers',
     {
-      fallbackData: initialProviders,
+      fallbackData: { data: { data: initialProviders, count: initialProviders.length }, status: 200 },
       revalidateOnFocus: true,
     },
   );
+  const providers = Array.isArray(providersResponse.data?.data?.data)
+    ? providersResponse.data.data.data
+    : initialProviders;
+  const mutateProviders = providersResponse.mutate;
+  const isProvidersValidating = providersResponse.isValidating;
 
   const connectedProviders = providers;
 
@@ -134,34 +132,44 @@ export function TestsLayout({ initialFindings, initialProviders, orgId }: TestsL
     }
 
     setIsScanning(true);
-    toast.message(`Starting ${targetProvider.name} security scan...`);
+    const startTime = Date.now();
+    toast.message(`Starting ${targetProvider.displayName || targetProvider.name} security scan...`);
 
     try {
       if (targetProvider.isLegacy) {
-        // Run legacy check for this specific connection
-        const { runTests } = await import('../actions/run-tests');
-        // Pass the unique connection ID to only scan this specific connection
-        const result = await runTests(targetProvider.id);
+        // Run legacy scan via API route (triggers Trigger.dev task)
+        const res = await fetch('/api/cloud-tests/legacy-scan', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ integrationId: targetProvider.id }),
+        });
+        const result = await res.json();
+
         if (!result.success) {
           console.error('Legacy scan error:', result.errors);
+          toast.error(`Scan failed: ${result.errors?.join(', ') || 'Unknown error'}`);
+          return null;
         }
       } else {
         // Use dedicated cloud security endpoint
-        const response = await api.post(`/v1/cloud-security/scan/${targetProvider.id}`, {}, orgId);
+        const response = await api.post(`/v1/cloud-security/scan/${targetProvider.id}`, {});
         if (response.error) {
-          console.error(`Error scanning ${targetProvider.name}:`, response.error);
-          toast.error(`Failed to scan ${targetProvider.name}`);
+          console.error(`Error scanning ${targetProvider.name}:`, response.error, 'Status:', response.status);
+          toast.error(`Failed to scan ${targetProvider.name}: ${response.error}`);
           return null;
         }
       }
 
-      toast.success('Scan completed! Results updated.');
-      await mutateProviders(); // Refresh to get updated lastRunAt
-      await mutateFindings();
+      // Refresh data to get updated results (SWR cache + server cache already revalidated)
+      await Promise.all([mutateProviders(), mutateFindings()]);
+
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      toast.success(`Scan completed in ${elapsed}s! Results updated.`);
       return 'completed';
     } catch (error) {
       console.error('Scan error:', error);
-      toast.error('Failed to complete scan. Please try again.');
+      toast.error(`Failed to complete scan: ${error instanceof Error ? error.message : 'Please try again.'}`);
       return null;
     } finally {
       setIsScanning(false);
@@ -175,8 +183,8 @@ export function TestsLayout({ initialFindings, initialProviders, orgId }: TestsL
   };
 
   const handleCloudConnected = async () => {
-    mutateProviders();
-    mutateFindings();
+    await mutateProviders();
+    await mutateFindings();
     setViewingResults(true);
   };
 
@@ -223,20 +231,23 @@ export function TestsLayout({ initialFindings, initialProviders, orgId }: TestsL
         title="Cloud Security Tests"
         actions={
           <>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setAddConnectionProvider(null);
-                setViewingResults(false);
-              }}
-            >
-              <Add />
-              Add Cloud
-            </Button>
-            <Button variant="outline" size="icon" onClick={() => setShowSettings(true)}>
-              <Settings />
-            </Button>
+            {canCreateIntegration && (
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setAddConnectionProvider(null);
+                  setViewingResults(false);
+                }}
+              >
+                <Add />
+                Add Cloud
+              </Button>
+            )}
+            {canRunScan && (
+              <Button variant="outline" size="icon" onClick={() => setShowSettings(true)}>
+                <Settings />
+              </Button>
+            )}
           </>
         }
       >
@@ -277,15 +288,17 @@ export function TestsLayout({ initialFindings, initialProviders, orgId }: TestsL
           setConfigureDialogOpen(true);
         }}
         needsConfiguration={needsVariableConfiguration}
+        canRunScan={canRunScan}
+        canAddConnection={canCreateIntegration}
       />
 
-      {/* CloudSettingsModal only for providers that do NOT support multiple connections */}
-      {/* AWS is managed via ConnectIntegrationDialog since it supports multiple connections */}
+      {/* CloudSettingsModal for single-connection providers AND legacy connections */}
+      {/* Legacy connections need this modal for disconnect since ConnectIntegrationDialog can't see them */}
       <CloudSettingsModal
         open={showSettings}
         onOpenChange={setShowSettings}
         connectedProviders={connectedProviders
-          .filter((p) => !p.supportsMultipleConnections)
+          .filter((p) => !p.supportsMultipleConnections || p.isLegacy)
           .map((p) => ({
             id: p.integrationId,
             connectionId: p.id,

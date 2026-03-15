@@ -3,7 +3,6 @@
 import { Finding, FrameworkEditorFramework, Policy, Task } from '@db';
 import { FrameworkInstanceWithControls } from '../types';
 import { ComplianceOverview } from './ComplianceOverview';
-import { DraggableCards } from './DraggableCards';
 import { FindingsOverview } from './FindingsOverview';
 import { FrameworksOverview } from './FrameworksOverview';
 import { ToDoOverview } from './ToDoOverview';
@@ -28,11 +27,21 @@ export interface PeopleScore {
   completedMembers: number;
 }
 
-export interface FindingWithTask extends Finding {
+export interface DocumentsScore {
+  totalDocuments: number;
+  completedDocuments: number;
+  outstandingDocuments: number;
+}
+
+export interface FindingWithTarget extends Finding {
   task: {
     id: string;
     title: string;
-  };
+  } | null;
+  evidenceSubmission: {
+    id: string;
+    formType: string;
+  } | null;
 }
 
 export interface OverviewProps {
@@ -42,10 +51,11 @@ export interface OverviewProps {
   organizationId: string;
   publishedPoliciesScore: PublishedPoliciesScore;
   doneTasksScore: DoneTasksScore;
+  documentsScore: DocumentsScore;
   peopleScore: PeopleScore;
   currentMember: { id: string; role: string } | null;
   onboardingTriggerJobId: string | null;
-  findings: FindingWithTask[];
+  findings: FindingWithTarget[];
 }
 
 export const Overview = ({
@@ -55,25 +65,41 @@ export const Overview = ({
   organizationId,
   publishedPoliciesScore,
   doneTasksScore,
+  documentsScore,
   peopleScore,
   currentMember,
   onboardingTriggerJobId,
   findings,
 }: OverviewProps) => {
+  const overallComplianceScore = calculateOverallComplianceScore({
+    publishedPolicies: publishedPoliciesScore.publishedPolicies,
+    totalPolicies: publishedPoliciesScore.totalPolicies,
+    doneTasks: doneTasksScore.doneTasks,
+    totalTasks: doneTasksScore.totalTasks,
+    completedDocuments: documentsScore.completedDocuments,
+    totalDocuments: documentsScore.totalDocuments,
+    completedMembers: peopleScore.completedMembers,
+    totalMembers: peopleScore.totalMembers,
+  });
+
   return (
-    <DraggableCards>
+    <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
       <ComplianceOverview
-        frameworks={frameworksWithControls}
+        organizationId={organizationId}
+        overallComplianceScore={overallComplianceScore}
         totalPolicies={publishedPoliciesScore.totalPolicies}
         publishedPolicies={publishedPoliciesScore.publishedPolicies}
         totalTasks={doneTasksScore.totalTasks}
         doneTasks={doneTasksScore.doneTasks}
+        totalDocuments={documentsScore.totalDocuments}
+        completedDocuments={documentsScore.completedDocuments}
         totalMembers={peopleScore.totalMembers}
         completedMembers={peopleScore.completedMembers}
       />
       <FrameworksOverview
         frameworksWithControls={frameworksWithControls}
         frameworksWithCompliance={frameworksWithCompliance}
+        overallComplianceScore={overallComplianceScore}
         allFrameworks={allFrameworks}
         organizationId={organizationId}
       />
@@ -92,6 +118,41 @@ export const Overview = ({
         onboardingTriggerJobId={onboardingTriggerJobId}
       />
       <FindingsOverview findings={findings} organizationId={organizationId} />
-    </DraggableCards>
+    </div>
   );
 };
+
+function calculateOverallComplianceScore({
+  publishedPolicies,
+  totalPolicies,
+  doneTasks,
+  totalTasks,
+  completedDocuments,
+  totalDocuments,
+  completedMembers,
+  totalMembers,
+}: {
+  publishedPolicies: number;
+  totalPolicies: number;
+  doneTasks: number;
+  totalTasks: number;
+  completedDocuments: number;
+  totalDocuments: number;
+  completedMembers: number;
+  totalMembers: number;
+}) {
+  const rows = [
+    { done: publishedPolicies, total: totalPolicies },
+    { done: doneTasks, total: totalTasks },
+    { done: completedDocuments, total: totalDocuments },
+    { done: completedMembers, total: totalMembers },
+  ];
+  const rowsWithData = rows.filter((row) => row.total > 0);
+  if (rowsWithData.length === 0) return 0;
+
+  const sumPercentages = rowsWithData.reduce((sum, row) => {
+    return sum + Math.round((row.done / row.total) * 100);
+  }, 0);
+
+  return Math.round(sumPercentages / rowsWithData.length);
+}

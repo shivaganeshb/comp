@@ -1,8 +1,7 @@
 'use client';
 
-import { acceptPolicy } from '@/actions/accept-policies';
-import { Button } from '@comp/ui/button';
-import { Check } from 'lucide-react';
+import { Button } from '@trycompai/design-system';
+import { Checkmark } from '@trycompai/design-system/icons';
 import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 import { toast } from 'sonner';
@@ -27,37 +26,46 @@ export function PolicyAcceptButton({
   const handleAccept = async () => {
     startTransition(async () => {
       try {
-        const result = await acceptPolicy(policyId, memberId);
-        if (result.success) {
-          setAccepted(true);
-          toast.success('Policy accepted successfully');
-          router.refresh();
-          // Redirect after a short delay to show the success state
-          setTimeout(() => {
-            router.push(`/${orgId}`);
-          }, 1000);
-        } else {
-          toast.error(result.error || 'Failed to accept policy');
+        const res = await fetch('/api/portal/accept-policies', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ policyIds: [policyId], memberId }),
+        });
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || 'Failed to accept policy');
         }
+
+        setAccepted(true);
+        toast.success('Policy accepted successfully');
+        router.refresh();
+        // Redirect after a short delay to show the success state
+        setTimeout(() => {
+          router.push(`/${orgId}`);
+        }, 1000);
       } catch (error) {
-        console.error('Error accepting policy:', error);
-        toast.error('An error occurred while accepting the policy');
+        toast.error(error instanceof Error ? error.message : 'An error occurred while accepting the policy');
       }
     });
   };
 
   if (accepted) {
     return (
-      <Button disabled className="w-full">
-        <Check className="mr-2 h-4 w-4" />
-        Policy Accepted
-      </Button>
+      <div className="w-full">
+        <Button disabled iconLeft={<Checkmark size={16} />}>
+          Policy Accepted
+        </Button>
+      </div>
     );
   }
 
   return (
-    <Button onClick={handleAccept} disabled={isPending} className="w-full">
-      {isPending ? 'Accepting...' : 'Accept Policy'}
-    </Button>
+    <div className="w-full">
+      <Button onClick={handleAccept} disabled={isPending}>
+        {isPending ? 'Accepting...' : 'Accept Policy'}
+      </Button>
+    </div>
   );
 }

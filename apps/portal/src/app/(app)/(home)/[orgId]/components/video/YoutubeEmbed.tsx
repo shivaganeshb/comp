@@ -1,8 +1,8 @@
 'use client';
 
-import { Button } from '@comp/ui/button';
 import type { EmployeeTrainingVideoCompletion } from '@db';
-import { ArrowRight, Check, Loader2 } from 'lucide-react';
+import { Button, Spinner } from '@trycompai/design-system';
+import { ArrowRight, Checkmark } from '@trycompai/design-system/icons';
 import { useState } from 'react';
 
 // Define our own TrainingVideo interface since we can't find the import
@@ -27,7 +27,6 @@ interface YoutubeEmbedProps {
   onNext?: () => void;
   allVideosCompleted: boolean;
   isMarkingComplete: boolean;
-  onWatchAgain: () => void;
 }
 
 export function YoutubeEmbed({
@@ -37,7 +36,6 @@ export function YoutubeEmbed({
   onNext,
   allVideosCompleted,
   isMarkingComplete,
-  onWatchAgain,
 }: YoutubeEmbedProps) {
   const [isRewatching, setIsRewatching] = useState(false);
 
@@ -53,16 +51,15 @@ export function YoutubeEmbed({
             variant={isCompleted ? 'secondary' : 'default'}
             onClick={onComplete}
             disabled={isCompleted}
-            className="gap-2"
           >
             {isMarkingComplete ? (
               <>
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <Spinner size="sm" />
                 Marking as Complete...
               </>
             ) : (
               <>
-                <Check className="h-4 w-4" />
+                <Checkmark size={16} />
                 {isCompleted ? 'Completed' : 'Mark as Complete'}
               </>
             )}
@@ -73,16 +70,16 @@ export function YoutubeEmbed({
         {isCompleted && !isRewatching && (
           <div className="bg-background/80 absolute inset-0 z-10 flex items-center justify-center backdrop-blur-xs">
             <div className="space-y-4 text-center">
-              <Check className="text-primary mx-auto h-12 w-12" />
+              <div className="text-primary mx-auto"><Checkmark size={48} /></div>
               <h3 className="text-xl font-semibold">Video Completed</h3>
               <div className="flex justify-center gap-2">
-                <Button variant="outline" onClick={() => setIsRewatching(true)} className="gap-2">
+                <Button variant="outline" onClick={() => setIsRewatching(true)}>
                   Watch Again
                 </Button>
                 {onNext && (
-                  <Button onClick={onNext} className="gap-2">
+                  <Button onClick={onNext}>
                     Next Video
-                    <ArrowRight className="h-4 w-4" />
+                    <ArrowRight className="ml-2 h-4 w-4" />
                   </Button>
                 )}
               </div>

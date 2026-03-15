@@ -1,7 +1,6 @@
 'use client';
 
-import { deleteContextEntryAction } from '@/actions/context-hub/delete-context-entry-action';
-import { updateContextEntryAction } from '@/actions/context-hub/update-context-entry-action';
+import { apiClient } from '@/lib/api-client';
 import { isJSON } from '@/lib/utils';
 import { useMediaQuery } from '@comp/ui/hooks';
 import type { Context } from '@db';
@@ -52,7 +51,7 @@ import {
   TrashCan,
 } from '@trycompai/design-system/icons';
 import { Check, Loader2 } from 'lucide-react';
-import { useAction } from 'next-safe-action/hooks';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { ContextForm } from './components/context-form';
@@ -64,17 +63,28 @@ function EditableAnswerCell({ context }: { context: Context }) {
   const [structuredValue, setStructuredValue] = useState<Record<string, string> | null>(null);
   const [arrayValue, setArrayValue] = useState<Record<string, string>[] | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [status, setStatus] = useState<'idle' | 'executing'>('idle');
+  const router = useRouter();
 
-  const { execute, status } = useAction(updateContextEntryAction, {
-    onSuccess: () => {
-      setIsEditing(false);
-      toast.success('Answer updated');
+  const execute = useCallback(
+    async (data: { id: string; question: string; answer: string }) => {
+      setStatus('executing');
+      const response = await apiClient.patch(`/v1/context/${data.id}`, {
+        question: data.question,
+        answer: data.answer,
+      });
+      setStatus('idle');
+      if (response.error) {
+        setValue(context.answer);
+        toast.error('Failed to update answer');
+      } else {
+        setIsEditing(false);
+        toast.success('Answer updated');
+        router.refresh();
+      }
     },
-    onError: () => {
-      setValue(context.answer);
-      toast.error('Failed to update answer');
-    },
-  });
+    [context.answer, router],
+  );
 
   // Parse structured data when entering edit mode
   useEffect(() => {
@@ -376,16 +386,24 @@ function EditableAnswerCell({ context }: { context: Context }) {
 // Actions cell with dropdown
 function ActionsCell({ context }: { context: Context }) {
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [status, setStatus] = useState<'idle' | 'executing'>('idle');
+  const router = useRouter();
 
-  const { execute, status } = useAction(deleteContextEntryAction, {
-    onSuccess: () => {
-      setDeleteOpen(false);
-      toast.success('Entry deleted');
+  const execute = useCallback(
+    async (data: { id: string }) => {
+      setStatus('executing');
+      const response = await apiClient.delete(`/v1/context/${data.id}`);
+      setStatus('idle');
+      if (response.error) {
+        toast.error('Failed to delete entry');
+      } else {
+        setDeleteOpen(false);
+        toast.success('Entry deleted');
+        router.refresh();
+      }
     },
-    onError: () => {
-      toast.error('Failed to delete entry');
-    },
-  });
+    [router],
+  );
 
   return (
     <>
@@ -473,9 +491,32 @@ function CreateContextSheetLocal({
   );
 }
 
-export const ContextTable = ({ entries }: { entries: Context[]; pageCount: number }) => {
+export const ContextTable = ({
+  entries,
+  pageCount,
+}: {
+  entries: Context[];
+  pageCount: number;
+}) => {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [search, setSearch] = useState('');
   const [isSheetOpen, setIsSheetOpen] = useState(false);
+
+  const currentPage = Number(searchParams.get('page')) || 1;
+  const perPage = Number(searchParams.get('perPage')) || 50;
+
+  const updateSearchParams = useCallback(
+    (updates: Record<string, string>) => {
+      const params = new URLSearchParams(searchParams.toString());
+      for (const [key, value] of Object.entries(updates)) {
+        params.set(key, value);
+      }
+      router.push(`${pathname}?${params.toString()}`);
+    },
+    [router, pathname, searchParams],
+  );
 
   const filteredEntries = useMemo(() => {
     if (!search.trim()) return entries;
@@ -510,7 +551,18 @@ export const ContextTable = ({ entries }: { entries: Context[]; pageCount: numbe
       </HStack>
 
       {/* Table */}
-      <Table variant="bordered">
+      <Table
+        variant="bordered"
+        pagination={{
+          page: currentPage,
+          pageCount,
+          onPageChange: (page) => updateSearchParams({ page: String(page) }),
+          pageSize: perPage,
+          pageSizeOptions: [25, 50, 100],
+          onPageSizeChange: (size) =>
+            updateSearchParams({ perPage: String(size), page: '1' }),
+        }}
+      >
         <TableHeader>
           <TableRow>
             <TableHead style={{ width: '35%' }}>QUESTION</TableHead>

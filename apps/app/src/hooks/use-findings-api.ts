@@ -2,6 +2,7 @@
 
 import { useApi } from '@/hooks/use-api';
 import { useApiSWR, UseApiSWROptions } from '@/hooks/use-api-swr';
+import type { EvidenceFormType } from '@comp/company';
 import type { FindingStatus, FindingType } from '@db';
 import { useCallback } from 'react';
 
@@ -11,9 +12,12 @@ export interface Finding {
   type: FindingType;
   status: FindingStatus;
   content: string;
+  revisionNote: string | null;
   createdAt: string;
   updatedAt: string;
-  taskId: string;
+  taskId: string | null;
+  evidenceSubmissionId: string | null;
+  evidenceFormType: EvidenceFormType | null;
   templateId: string | null;
   createdById: string;
   organizationId: string;
@@ -34,7 +38,13 @@ export interface Finding {
   task: {
     id: string;
     title: string;
-  };
+  } | null;
+  evidenceSubmission: {
+    id: string;
+    formType: EvidenceFormType;
+    submittedAt: string;
+    submittedById: string | null;
+  } | null;
 }
 
 export interface FindingTemplate {
@@ -48,7 +58,9 @@ export interface FindingTemplate {
 }
 
 interface CreateFindingData {
-  taskId: string;
+  taskId?: string;
+  evidenceSubmissionId?: string;
+  evidenceFormType?: EvidenceFormType;
   type?: FindingType;
   templateId?: string;
   content: string;
@@ -58,6 +70,7 @@ interface UpdateFindingData {
   status?: FindingStatus;
   type?: FindingType;
   content?: string;
+  revisionNote?: string | null;
 }
 
 export interface FindingHistoryEntry {
@@ -99,6 +112,38 @@ export interface UseFindingsOptions extends UseApiSWROptions<Finding[]> {
  */
 export function useTaskFindings(taskId: string | null, options: UseFindingsOptions = {}) {
   const endpoint = taskId ? `/v1/findings?taskId=${taskId}` : null;
+
+  return useApiSWR<Finding[]>(endpoint, {
+    ...options,
+    refreshInterval: options.refreshInterval ?? DEFAULT_FINDINGS_POLLING_INTERVAL,
+  });
+}
+
+/**
+ * Hook to fetch findings for a specific evidence submission
+ */
+export function useSubmissionFindings(
+  evidenceSubmissionId: string | null,
+  options: UseFindingsOptions = {},
+) {
+  const endpoint = evidenceSubmissionId
+    ? `/v1/findings?evidenceSubmissionId=${evidenceSubmissionId}`
+    : null;
+
+  return useApiSWR<Finding[]>(endpoint, {
+    ...options,
+    refreshInterval: options.refreshInterval ?? DEFAULT_FINDINGS_POLLING_INTERVAL,
+  });
+}
+
+/**
+ * Hook to fetch findings for a specific evidence form type
+ */
+export function useFormTypeFindings(
+  evidenceFormType: EvidenceFormType | null,
+  options: UseFindingsOptions = {},
+) {
+  const endpoint = evidenceFormType ? `/v1/findings?evidenceFormType=${evidenceFormType}` : null;
 
   return useApiSWR<Finding[]>(endpoint, {
     ...options,

@@ -21,6 +21,7 @@
               "automated-evidence",
               "device-agent",
               "security-questionnaire",
+              "penetration-tests",
               {
                 "group": "Trust",
                 "pages": [
@@ -53,6 +54,12 @@
             "group": "Platform Overview",
             "pages": [
               "integrations/index"
+            ]
+          },
+          {
+            "group": "Integration Guides",
+            "pages": [
+              "integrations/aikido"
             ]
           },
           {

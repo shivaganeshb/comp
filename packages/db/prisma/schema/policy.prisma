@@ -3,12 +3,18 @@ enum PolicyDisplayFormat {
   PDF
 }
 
+enum PolicyVisibility {
+  ALL        // Visible to everyone in organization
+  DEPARTMENT // Only visible to specified departments
+}
+
 model Policy {
   id               String              @id @default(dbgenerated("generate_prefixed_cuid('pol'::text)"))
   name             String
   description      String?
   status           PolicyStatus        @default(draft)
   content          Json[]
+  draftContent     Json[]              @default([])
   frequency        Frequency?
   department       Departments?
   isRequiredToSign Boolean             @default(true)
@@ -17,6 +23,10 @@ model Policy {
   isArchived       Boolean             @default(false)
   displayFormat    PolicyDisplayFormat @default(EDITOR)
   pdfUrl           String?
+
+  // Visibility settings (for department-specific policies)
+  visibility           PolicyVisibility @default(ALL)
+  visibleToDepartments Departments[]    @default([])
 
   // Dates
   createdAt       DateTime  @default(now())
@@ -34,6 +44,33 @@ model Policy {
   policyTemplateId String?
   policyTemplate   FrameworkEditorPolicyTemplate? @relation(fields: [policyTemplateId], references: [id])
   controls         Control[]
+  currentVersionId String?                        @unique
+  currentVersion   PolicyVersion?                 @relation("PolicyCurrentVersion", fields: [currentVersionId], references: [id])
+  pendingVersionId String?
+  versions         PolicyVersion[]                @relation("PolicyVersions")
 
   @@index([organizationId])
+}
+
+model PolicyVersion {
+  id        String   @id @default(dbgenerated("generate_prefixed_cuid('pv'::text)"))
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  policyId String
+  policy   Policy @relation("PolicyVersions", fields: [policyId], references: [id], onDelete: Cascade)
+  currentForPolicy Policy? @relation("PolicyCurrentVersion")
+
+  // Version details
+  version       Int
+  content       Json[]
+  pdfUrl        String?
+  publishedById String?
+  publishedBy   Member? @relation("PolicyVersionPublisher", fields: [publishedById], references: [id], onDelete: SetNull)
+  changelog     String?
+
+  @@unique([policyId, version])
+  @@index([policyId])
+  @@index([createdAt])
 }

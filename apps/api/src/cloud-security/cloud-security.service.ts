@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { db } from '@db';
 import { getManifest } from '@comp/integration-platform';
+import { runs, tasks } from '@trigger.dev/sdk';
 import { CredentialVaultService } from '../integration-platform/services/credential-vault.service';
 import { OAuthCredentialsService } from '../integration-platform/services/oauth-credentials.service';
 import { GCPSecurityService } from './providers/gcp-security.service';
@@ -26,6 +27,12 @@ export interface ScanResult {
   findings: SecurityFinding[];
   scannedAt: string;
   error?: string;
+}
+
+export class ConnectionNotFoundError extends Error {
+  constructor() {
+    super('Connection not found');
+  }
 }
 
 @Injectable()
@@ -220,6 +227,65 @@ export class CloudSecurityService {
     }
   }
 
+  async triggerScan(
+    connectionId: string,
+    organizationId: string,
+  ): Promise<{ runId: string }> {
+    // Validate connection exists and is active
+    const connection = await db.integrationConnection.findFirst({
+      where: {
+        id: connectionId,
+        organizationId,
+        status: 'active',
+      },
+    });
+
+    if (!connection) {
+      throw new Error('Connection not found or inactive');
+    }
+
+    const handle = await tasks.trigger('run-cloud-security-scan', {
+      connectionId,
+      organizationId,
+      providerSlug: 'platform',
+      connectionName: connectionId,
+    });
+
+    this.logger.log(`Triggered cloud security scan task`, {
+      connectionId,
+      runId: handle.id,
+    });
+
+    return { runId: handle.id };
+  }
+
+  async getRunStatus(
+    runId: string,
+    connectionId: string,
+    organizationId: string,
+  ): Promise<{ completed: boolean; success: boolean; output: unknown }> {
+    // Verify the connection belongs to the caller's organization
+    const connection = await db.integrationConnection.findFirst({
+      where: {
+        id: connectionId,
+        organizationId,
+      },
+      select: { id: true },
+    });
+
+    if (!connection) {
+      throw new ConnectionNotFoundError();
+    }
+
+    const run = await runs.retrieve(runId);
+
+    return {
+      completed: run.isCompleted,
+      success: run.isCompleted ? run.isSuccess : false,
+      output: run.isCompleted ? run.output : null,
+    };
+  }
+
   private async storeFindings(
     connectionId: string,
     provider: string,
@@ -228,37 +294,40 @@ export class CloudSecurityService {
     const passedCount = findings.filter((f) => f.passed).length;
     const failedCount = findings.filter((f) => !f.passed).length;
 
-    // Create a scan run record
-    const scanRun = await db.integrationCheckRun.create({
-      data: {
-        connectionId,
-        checkId: `${provider}-security-scan`,
-        checkName: `${provider.toUpperCase()} Security Scan`,
-        status: 'success',
-        startedAt: new Date(),
-        completedAt: new Date(),
-        totalChecked: findings.length,
-        passedCount,
-        failedCount,
-      },
-    });
-
-    // Store each finding as a check result
-    if (findings.length > 0) {
-      await db.integrationCheckResult.createMany({
-        data: findings.map((finding) => ({
-          checkRunId: scanRun.id,
-          passed: finding.passed ?? false,
-          resourceType: finding.resourceType,
-          resourceId: finding.resourceId,
-          title: finding.title,
-          description: finding.description,
-          severity: finding.passed ? 'info' : finding.severity, // Passed checks are info level
-          remediation: finding.remediation,
-          evidence: (finding.evidence || {}) as object,
-          collectedAt: new Date(finding.createdAt),
-        })),
+    // Use a transaction to ensure atomicity - both run and results are created together
+    await db.$transaction(async (tx) => {
+      // Create a scan run record
+      const scanRun = await tx.integrationCheckRun.create({
+        data: {
+          connectionId,
+          checkId: `${provider}-security-scan`,
+          checkName: `${provider.toUpperCase()} Security Scan`,
+          status: 'success',
+          startedAt: new Date(),
+          completedAt: new Date(),
+          totalChecked: findings.length,
+          passedCount,
+          failedCount,
+        },
       });
-    }
+
+      // Store each finding as a check result
+      if (findings.length > 0) {
+        await tx.integrationCheckResult.createMany({
+          data: findings.map((finding) => ({
+            checkRunId: scanRun.id,
+            passed: finding.passed ?? false,
+            resourceType: finding.resourceType,
+            resourceId: finding.resourceId,
+            title: finding.title,
+            description: finding.description ?? '',
+            severity: finding.passed ? 'info' : finding.severity,
+            remediation: finding.remediation ?? null,
+            evidence: (finding.evidence || {}) as object,
+            collectedAt: new Date(finding.createdAt),
+          })),
+        });
+      }
+    });
   }
 }

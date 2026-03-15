@@ -1,5 +1,5 @@
-import { Button } from '@comp/ui/button';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { Button, Text } from '@trycompai/design-system';
+import { ChevronLeft, ChevronRight } from '@trycompai/design-system/icons';
 
 interface CarouselControlsProps {
   currentIndex: number;
@@ -28,9 +28,9 @@ export function CarouselControls({
         <ChevronLeft className="h-4 w-4" />
       </Button>
 
-      <div className="text-muted-foreground text-sm">
+      <Text variant="muted" size="sm">
         {currentIndex + 1} of {total}
-      </div>
+      </Text>
 
       <Button
         variant="outline"

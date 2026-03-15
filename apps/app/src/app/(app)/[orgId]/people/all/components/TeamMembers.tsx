@@ -1,11 +1,8 @@
-'use server';
-
-import { auth } from '@/utils/auth';
+import { filterComplianceMembers } from '@/lib/compliance';
+import { trainingVideos as trainingVideosData } from '@/lib/data/training-videos';
+import { serverApi } from '@/lib/server-api-client';
 import type { Invitation, Member, User } from '@db';
 import { db } from '@db';
-import { headers } from 'next/headers';
-import { removeMember } from '../actions/removeMember';
-import { revokeInvitation } from '../actions/revokeInvitation';
 import { getEmployeeSyncConnections } from '../data/queries';
 import { TeamMembersClient } from './TeamMembersClient';
 
@@ -18,80 +15,112 @@ export interface TeamMembersData {
   pendingInvitations: Invitation[];
 }
 
-export async function TeamMembers() {
-  const session = await auth.api.getSession({
-    headers: await headers(),
-  });
-  const organizationId = session?.session?.activeOrganizationId;
+export interface TeamMembersProps {
+  canManageMembers: boolean;
+  canInviteUsers: boolean;
+  isAuditor: boolean;
+  isCurrentUserOwner: boolean;
+  organizationId: string;
+}
+
+export async function TeamMembers(props: TeamMembersProps) {
+  const { canManageMembers, canInviteUsers, isAuditor, isCurrentUserOwner, organizationId } = props;
 
   if (!organizationId) {
     return null;
   }
 
-  const currentUserMember = await db.member.findFirst({
-    where: {
-      organizationId: organizationId,
-      userId: session?.user.id,
-    },
-  });
+  // Fetch members and invitations from API
+  const [membersRes, invitationsRes] = await Promise.all([
+    serverApi.get<{ data: MemberWithUser[]; count: number }>(
+      '/v1/people?includeDeactivated=true',
+    ),
+    serverApi.get<{ data: Invitation[] }>('/v1/auth/invitations'),
+  ]);
 
-  // Parse roles from comma-separated string and check if user has admin or owner role
-  const currentUserRoles = currentUserMember?.role?.split(',').map((r) => r.trim()) ?? [];
-  const canManageMembers = currentUserRoles.some((role) => ['owner', 'admin'].includes(role));
-  const isAuditor = currentUserRoles.includes('auditor');
-  const canInviteUsers = canManageMembers || isAuditor;
-  const isCurrentUserOwner = currentUserRoles.includes('owner');
+  const members: MemberWithUser[] = Array.isArray(membersRes.data?.data)
+    ? membersRes.data.data
+    : [];
+  const pendingInvitations: Invitation[] = Array.isArray(invitationsRes.data?.data)
+    ? invitationsRes.data.data
+    : [];
 
-  let members: MemberWithUser[] = [];
-  let pendingInvitations: Invitation[] = [];
-
-  if (organizationId) {
-    // Fetch all members including deactivated ones
-    const fetchedMembers = await db.member.findMany({
-      where: {
-        organizationId: organizationId,
-      },
-      include: {
-        user: true,
-      },
-      orderBy: [
-        { deactivated: 'asc' }, // Active members first
-        { user: { email: 'asc' } },
-      ],
-    });
-
-    members = fetchedMembers;
-
-    pendingInvitations = await db.invitation.findMany({
-      where: {
-        organizationId,
-        status: 'pending',
-      },
-      orderBy: {
-        email: 'asc',
-      },
-    });
-  }
-
-  const data: TeamMembersData = {
-    members: members,
-    pendingInvitations: pendingInvitations,
-  };
+  const data: TeamMembersData = { members, pendingInvitations };
 
   // Fetch employee sync connections server-side
   const employeeSyncData = await getEmployeeSyncConnections(organizationId);
 
+  // Build task completion map for employees/contractors
+  const taskCompletionMap: Record<string, { completed: number; total: number }> = {};
+
+  const employeeMembers = await filterComplianceMembers(members, organizationId);
+
+  // Build a set of member IDs that have device-agent devices
+  const memberIds = members.map((m) => m.id);
+  const devicesForMembers = await db.device.findMany({
+    where: {
+      organizationId,
+      memberId: { in: memberIds },
+    },
+    select: { memberId: true },
+  });
+  const memberIdsWithDeviceAgent = [
+    ...new Set(devicesForMembers.map((d) => d.memberId)),
+  ];
+
+  if (employeeMembers.length > 0) {
+    const org = await db.organization.findUnique({
+      where: { id: organizationId },
+      select: { securityTrainingStepEnabled: true },
+    });
+
+    const policies = await db.policy.findMany({
+      where: {
+        organizationId,
+        isRequiredToSign: true,
+        status: 'published',
+        isArchived: false,
+      },
+    });
+
+    const employeeIds = employeeMembers.map((m) => m.id);
+    const trainingCompletions = org?.securityTrainingStepEnabled
+      ? await db.employeeTrainingVideoCompletion.findMany({
+          where: { memberId: { in: employeeIds } },
+        })
+      : [];
+
+    const totalPolicies = policies.length;
+    const totalTrainingVideos = org?.securityTrainingStepEnabled ? trainingVideosData.length : 0;
+    const totalTasks = totalPolicies + totalTrainingVideos;
+
+    for (const employee of employeeMembers) {
+      const policiesCompleted = policies.filter((p) => p.signedBy.includes(employee.id)).length;
+
+      const trainingsCompleted = org?.securityTrainingStepEnabled
+        ? trainingCompletions.filter(
+            (tc) => tc.memberId === employee.id && tc.completedAt !== null,
+          ).length
+        : 0;
+
+      taskCompletionMap[employee.id] = {
+        completed: policiesCompleted + trainingsCompleted,
+        total: totalTasks,
+      };
+    }
+  }
+
   return (
     <TeamMembersClient
       data={data}
-      organizationId={organizationId ?? ''}
-      removeMemberAction={removeMember}
-      revokeInvitationAction={revokeInvitation}
+      organizationId={organizationId}
       canManageMembers={canManageMembers}
       canInviteUsers={canInviteUsers}
       isAuditor={isAuditor}
       isCurrentUserOwner={isCurrentUserOwner}
       employeeSyncData={employeeSyncData}
+      taskCompletionMap={taskCompletionMap}
+      memberIdsWithDeviceAgent={memberIdsWithDeviceAgent}
     />
   );
 }

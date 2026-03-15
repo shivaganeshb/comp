@@ -17,6 +17,7 @@ export class MemberQueries {
     role: true,
     createdAt: true,
     department: true,
+    jobTitle: true,
     isActive: true,
     fleetDmLabelId: true,
     user: {
@@ -29,6 +30,7 @@ export class MemberQueries {
         createdAt: true,
         updatedAt: true,
         lastLogin: true,
+        isPlatformAdmin: true,
       },
     },
   } as const;
@@ -38,9 +40,13 @@ export class MemberQueries {
    */
   static async findAllByOrganization(
     organizationId: string,
+    includeDeactivated = false,
   ): Promise<PeopleResponseDto[]> {
     return db.member.findMany({
-      where: { organizationId, deactivated: false },
+      where: {
+        organizationId,
+        ...(includeDeactivated ? {} : { deactivated: false }),
+      },
       select: this.MEMBER_SELECT,
       orderBy: { createdAt: 'desc' },
     });
@@ -57,6 +63,7 @@ export class MemberQueries {
       where: {
         id: memberId,
         organizationId,
+        deactivated: false,
       },
       select: this.MEMBER_SELECT,
     });
@@ -77,31 +84,82 @@ export class MemberQueries {
         department: createData.department || 'none',
         isActive: createData.isActive ?? true,
         fleetDmLabelId: createData.fleetDmLabelId || null,
+        jobTitle: createData.jobTitle || null,
       },
       select: this.MEMBER_SELECT,
     });
   }
 
   /**
-   * Update a member by ID
+   * Update a member by ID within an organization
    */
   static async updateMember(
     memberId: string,
+    organizationId: string,
     updateData: UpdatePeopleDto,
   ): Promise<PeopleResponseDto> {
-    // Prepare update data with defaults for optional fields
-    const updatePayload: any = { ...updateData };
+    // Separate user-level fields from member-level fields
+    const { name, email, createdAt, ...memberFields } = updateData;
+
+    // Prepare member update data
+    const updatePayload: any = { ...memberFields };
+
+    // Convert createdAt string to Date for Prisma
+    if (createdAt !== undefined) {
+      updatePayload.createdAt = new Date(createdAt);
+    }
 
     // Handle fleetDmLabelId: convert undefined to null for database
     if (
-      updateData.fleetDmLabelId === undefined &&
-      'fleetDmLabelId' in updateData
+      memberFields.fleetDmLabelId === undefined &&
+      'fleetDmLabelId' in memberFields
     ) {
       updatePayload.fleetDmLabelId = null;
     }
 
+    const hasUserUpdates =
+      name !== undefined || email !== undefined;
+    const hasMemberUpdates = Object.keys(updatePayload).length > 0;
+
+    // If we need to update both user and member, use a transaction
+    if (hasUserUpdates) {
+      return db.$transaction(async (tx) => {
+        // Get the member to find the associated userId (scoped to org)
+        const member = await tx.member.findFirstOrThrow({
+          where: { id: memberId, organizationId },
+          select: { userId: true },
+        });
+
+        // Update user fields
+        const userUpdateData: { name?: string; email?: string } = {};
+        if (name !== undefined) userUpdateData.name = name;
+        if (email !== undefined) userUpdateData.email = email;
+
+        await tx.user.update({
+          where: { id: member.userId },
+          data: userUpdateData,
+        });
+
+        // Update member fields if any
+        if (hasMemberUpdates) {
+          return tx.member.update({
+            where: { id: memberId, organizationId },
+            data: updatePayload,
+            select: this.MEMBER_SELECT,
+          });
+        }
+
+        // Return updated member with fresh user data
+        return tx.member.findFirstOrThrow({
+          where: { id: memberId, organizationId },
+          select: this.MEMBER_SELECT,
+        });
+      });
+    }
+
+    // Only member-level updates
     return db.member.update({
-      where: { id: memberId },
+      where: { id: memberId, organizationId },
       data: updatePayload,
       select: this.MEMBER_SELECT,
     });
@@ -136,20 +194,26 @@ export class MemberQueries {
   }
 
   /**
-   * Delete a member by ID
+   * Delete a member by ID within an organization
    */
-  static async deleteMember(memberId: string): Promise<void> {
+  static async deleteMember(
+    memberId: string,
+    organizationId: string,
+  ): Promise<void> {
     await db.member.delete({
-      where: { id: memberId },
+      where: { id: memberId, organizationId },
     });
   }
 
   /**
-   * Unlink device by resetting fleetDmLabelId to null
+   * Unlink device by resetting fleetDmLabelId to null within an organization
    */
-  static async unlinkDevice(memberId: string): Promise<PeopleResponseDto> {
+  static async unlinkDevice(
+    memberId: string,
+    organizationId: string,
+  ): Promise<PeopleResponseDto> {
     return db.member.update({
-      where: { id: memberId },
+      where: { id: memberId, organizationId },
       data: { fleetDmLabelId: null },
       select: this.MEMBER_SELECT,
     });
@@ -170,6 +234,7 @@ export class MemberQueries {
       department: member.department || 'none',
       isActive: member.isActive ?? true,
       fleetDmLabelId: member.fleetDmLabelId || null,
+      jobTitle: member.jobTitle || null,
     }));
 
     // Perform bulk insert

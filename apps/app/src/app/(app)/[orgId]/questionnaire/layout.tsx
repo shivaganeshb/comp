@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import { getFeatureFlags } from '@/app/posthog';
 import { SecondaryMenu } from '@comp/ui/secondary-menu';
 import { db } from '@db';
@@ -69,3 +70,18 @@ export default async function Layout({ children, params }: LayoutProps) {
   );
 }
 
+=======
+import { requireRoutePermission } from '@/lib/permissions.server';
+
+export default async function Layout({
+  children,
+  params,
+}: {
+  children: React.ReactNode;
+  params: Promise<{ orgId: string }>;
+}) {
+  const { orgId } = await params;
+  await requireRoutePermission('questionnaire', orgId);
+  return <>{children}</>;
+}
+>>>>>>> upstream/main

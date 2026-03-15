@@ -8,6 +8,7 @@ import type { FrameworkEditorFramework } from '@db';
 import { PlusIcon } from 'lucide-react';
 import Image from 'next/image';
 import { useState } from 'react';
+import { usePermissions } from '@/hooks/use-permissions';
 import type { FrameworkInstanceWithControls } from '../types';
 import { AddFrameworkModal } from './AddFrameworkModal';
 import type { FrameworkInstanceWithComplianceScore } from './types';
@@ -17,6 +18,7 @@ export interface FrameworksOverviewProps {
   allFrameworks: FrameworkEditorFramework[];
   frameworksWithCompliance?: FrameworkInstanceWithComplianceScore[];
   organizationId?: string;
+  overallComplianceScore: number;
 }
 
 export function mapFrameworkToBadge(framework: FrameworkInstanceWithControls) {
@@ -58,22 +60,17 @@ export function mapFrameworkToBadge(framework: FrameworkInstanceWithControls) {
 export function FrameworksOverview({
   frameworksWithControls,
   frameworksWithCompliance,
+  overallComplianceScore,
   allFrameworks,
   organizationId,
 }: FrameworksOverviewProps) {
   const [isAddFrameworkModalOpen, setIsAddFrameworkModalOpen] = useState(false);
+  const { hasPermission } = usePermissions();
 
   // Create a map of framework IDs to compliance scores for easy lookup
   const complianceMap = new Map(
     frameworksWithCompliance?.map((f) => [f.frameworkInstance.id, f.complianceScore]) ?? [],
   );
-
-  // Calculate overall compliance score from all frameworks
-  const overallComplianceScore =
-    frameworksWithCompliance && frameworksWithCompliance.length > 0
-      ? frameworksWithCompliance.reduce((sum, f) => sum + f.complianceScore, 0) /
-        frameworksWithCompliance.length
-      : 0;
 
   // Get available frameworks that can be added (not already in the organization)
   const availableFrameworksToAdd = allFrameworks.filter(
@@ -108,14 +105,15 @@ export function FrameworksOverview({
                   <div key={framework.id}>
                     <div className="flex items-start justify-between py-4 px-1">
                       <div className="flex items-start gap-3 flex-1 min-w-0">
-                        <div className="flex-shrink-0 mt-1">
+                        <div className="shrink-0 mt-1">
                           {badgeSrc ? (
                             <Image
                               src={badgeSrc}
                               alt={framework.framework.name}
-                              width={400}
-                              height={400}
+                              width={32}
+                              height={32}
                               className="rounded-full w-8 h-8"
+                              unoptimized
                             />
                           ) : (
                             <div className="rounded-full w-8 h-8 bg-muted flex items-center justify-center">
@@ -160,14 +158,16 @@ export function FrameworksOverview({
         </div>
       </CardContent>
 
-      <CardFooter className="mt-auto">
-        <div className="flex justify-center w-full">
-          <Button variant="outline" onClick={() => setIsAddFrameworkModalOpen(true)}>
-            <PlusIcon className="h-4 w-4 mr-2" />
-            Add Framework
-          </Button>
-        </div>
-      </CardFooter>
+      {hasPermission('framework', 'create') && (
+        <CardFooter className="mt-auto">
+          <div className="flex justify-center w-full">
+            <Button variant="outline" onClick={() => setIsAddFrameworkModalOpen(true)}>
+              <PlusIcon className="h-4 w-4 mr-2" />
+              Add Framework
+            </Button>
+          </div>
+        </CardFooter>
+      )}
 
       <Dialog open={isAddFrameworkModalOpen} onOpenChange={setIsAddFrameworkModalOpen}>
         {isAddFrameworkModalOpen && (

@@ -4,13 +4,19 @@ import {
   Post,
   Param,
   Body,
-  Query,
   HttpException,
   HttpStatus,
   Logger,
+  UseGuards,
 } from '@nestjs/common';
+import { ApiTags, ApiSecurity } from '@nestjs/swagger';
+import { HybridAuthGuard } from '../../auth/hybrid-auth.guard';
+import { PermissionGuard } from '../../auth/permission.guard';
+import { RequirePermission } from '../../auth/require-permission.decorator';
+import { OrganizationId } from '../../auth/auth-context.decorator';
 import { getManifest, type CheckVariable } from '@comp/integration-platform';
 import { ConnectionRepository } from '../repositories/connection.repository';
+import { ConnectionService } from '../services/connection.service';
 import { ProviderRepository } from '../repositories/provider.repository';
 import { CredentialVaultService } from '../services/credential-vault.service';
 import { AutoCheckRunnerService } from '../services/auto-check-runner.service';
@@ -37,6 +43,9 @@ interface VariableDefinition {
 }
 
 @Controller({ path: 'integrations/variables', version: '1' })
+@ApiTags('Integrations')
+@UseGuards(HybridAuthGuard, PermissionGuard)
+@ApiSecurity('apikey')
 export class VariablesController {
   private readonly logger = new Logger(VariablesController.name);
 
@@ -45,12 +54,14 @@ export class VariablesController {
     private readonly providerRepository: ProviderRepository,
     private readonly credentialVaultService: CredentialVaultService,
     private readonly autoCheckRunnerService: AutoCheckRunnerService,
+    private readonly connectionService: ConnectionService,
   ) {}
 
   /**
    * Get all variables required for a provider's checks
    */
   @Get('providers/:providerSlug')
+  @RequirePermission('integration', 'read')
   async getProviderVariables(
     @Param('providerSlug') providerSlug: string,
   ): Promise<{ variables: VariableDefinition[] }> {
@@ -100,7 +111,13 @@ export class VariablesController {
    * Get variables for a specific connection (with current values)
    */
   @Get('connections/:connectionId')
-  async getConnectionVariables(@Param('connectionId') connectionId: string) {
+  @RequirePermission('integration', 'read')
+  async getConnectionVariables(
+    @Param('connectionId') connectionId: string,
+    @OrganizationId() organizationId: string,
+  ) {
+    await this.connectionService.getConnectionForOrg(connectionId, organizationId);
+
     const connection = await this.connectionRepository.findById(connectionId);
     if (!connection) {
       throw new HttpException('Connection not found', HttpStatus.NOT_FOUND);
@@ -166,10 +183,14 @@ export class VariablesController {
    * Fetch dynamic options for a variable (requires active connection)
    */
   @Get('connections/:connectionId/options/:variableId')
+  @RequirePermission('integration', 'read')
   async fetchVariableOptions(
     @Param('connectionId') connectionId: string,
     @Param('variableId') variableId: string,
+    @OrganizationId() organizationId: string,
   ): Promise<{ options: VariableOption[] }> {
+    await this.connectionService.getConnectionForOrg(connectionId, organizationId);
+
     const connection = await this.connectionRepository.findById(connectionId);
     if (!connection) {
       throw new HttpException('Connection not found', HttpStatus.NOT_FOUND);
@@ -223,12 +244,18 @@ export class VariablesController {
       return { options: variable.options || [] };
     }
 
+    this.logger.log(
+      `Fetching options for variable ${variableId} (provider ${provider.slug}, connection ${connectionId})`,
+    );
+
     // Get credentials to make authenticated requests
     const credentials =
       await this.credentialVaultService.getDecryptedCredentials(connectionId);
 
     const accessToken =
-      typeof credentials?.access_token === 'string' ? credentials.access_token : undefined;
+      typeof credentials?.access_token === 'string'
+        ? credentials.access_token
+        : undefined;
     if (!accessToken) {
       throw new HttpException(
         'No valid credentials found',
@@ -340,11 +367,21 @@ export class VariablesController {
     };
 
     try {
-      this.logger.log(`Fetching options for variable ${variableId}`);
       const options = await variable.fetchOptions(fetchContext);
+      if (options.length === 0) {
+        this.logger.warn(
+          `No options returned for variable ${variableId} (provider ${provider.slug}, connection ${connectionId})`,
+        );
+      } else {
+        this.logger.log(
+          `Fetched ${options.length} options for variable ${variableId} (provider ${provider.slug}, connection ${connectionId})`,
+        );
+      }
       return { options };
     } catch (error) {
-      this.logger.error(`Failed to fetch options: ${error}`);
+      this.logger.error(
+        `Failed to fetch options for variable ${variableId} (provider ${provider.slug}, connection ${connectionId}): ${error}`,
+      );
       throw new HttpException(
         `Failed to fetch options: ${error instanceof Error ? error.message : String(error)}`,
         HttpStatus.INTERNAL_SERVER_ERROR,
@@ -356,10 +393,14 @@ export class VariablesController {
    * Save variable values for a connection
    */
   @Post('connections/:connectionId')
+  @RequirePermission('integration', 'update')
   async saveConnectionVariables(
     @Param('connectionId') connectionId: string,
     @Body() body: SaveVariablesDto,
+    @OrganizationId() organizationId: string,
   ) {
+    await this.connectionService.getConnectionForOrg(connectionId, organizationId);
+
     const connection = await this.connectionRepository.findById(connectionId);
     if (!connection) {
       throw new HttpException('Connection not found', HttpStatus.NOT_FOUND);

@@ -1,6 +1,7 @@
+import { filterComplianceMembers } from '@/lib/compliance';
 import { trainingVideos as trainingVideosData } from '@/lib/data/training-videos';
 import { auth } from '@/utils/auth';
-import type { Member, Policy, User } from '@db';
+import type { Member, Organization, Policy, User } from '@db';
 import { db } from '@db';
 import { headers } from 'next/headers';
 import { EmployeeCompletionChart } from './EmployeeCompletionChart';
@@ -35,23 +36,26 @@ export async function EmployeesOverview() {
   let employees: EmployeeWithUser[] = [];
   let policies: Policy[] = [];
   const processedTrainingVideos: ProcessedTrainingVideo[] = [];
+  let organization: Organization | null = null;
 
   if (organizationId) {
+    organization = await db.organization.findUnique({
+      where: { id: organizationId },
+    });
+
     // Fetch employees
     const fetchedMembers = await db.member.findMany({
       where: {
         organizationId: organizationId,
         deactivated: false,
+        isActive: true,
       },
       include: {
         user: true,
       },
     });
 
-    employees = fetchedMembers.filter((member) => {
-      const roles = member.role.includes(',') ? member.role.split(',') : [member.role];
-      return roles.includes('employee') || roles.includes('contractor');
-    });
+    employees = await filterComplianceMembers(fetchedMembers, organizationId);
 
     // Fetch required policies that are published and not archived
     policies = await db.policy.findMany({
@@ -63,8 +67,8 @@ export async function EmployeesOverview() {
       },
     });
 
-    // Fetch and process training videos if employees exist
-    if (employees.length > 0) {
+    // Fetch and process training videos if employees exist and training step is enabled
+    if (employees.length > 0 && organization?.securityTrainingStepEnabled !== false) {
       const employeeTrainingVideos = await db.employeeTrainingVideoCompletion.findMany({
         where: {
           memberId: {
@@ -99,6 +103,7 @@ export async function EmployeesOverview() {
         policies={policies}
         trainingVideos={processedTrainingVideos as any}
         showAll={true}
+        securityTrainingStepEnabled={organization?.securityTrainingStepEnabled ?? true}
       />
     </div>
   );

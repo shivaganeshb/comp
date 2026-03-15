@@ -1,37 +1,128 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   InternalServerErrorException,
+  NotFoundException,
 } from '@nestjs/common';
-import { db, TaskStatus } from '@trycompai/db';
+import { db, TaskStatus, Prisma, TaskFrequency, Departments } from '@trycompai/db';
 import { TaskResponseDto } from './dto/task-responses.dto';
 import { TaskNotifierService } from './task-notifier.service';
+
+function computeNextTaskReviewDate(frequency: TaskFrequency | null | undefined): Date {
+  const now = new Date();
+  switch (frequency) {
+    case TaskFrequency.daily:
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    case TaskFrequency.weekly:
+      return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 7);
+    case TaskFrequency.monthly:
+      return new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+    case TaskFrequency.quarterly:
+      return new Date(now.getFullYear(), now.getMonth() + 3, now.getDate());
+    case TaskFrequency.yearly:
+      return new Date(now.getFullYear() + 1, now.getMonth(), now.getDate());
+    default:
+      return new Date(now.getFullYear() + 1, now.getMonth(), now.getDate());
+  }
+}
 
 @Injectable()
 export class TasksService {
   constructor(private readonly taskNotifierService: TaskNotifierService) {}
 
   /**
-   * Get all tasks for an organization
+   * Resolve a user actor for API-key authenticated requests.
+   * We attribute changes to an active organization owner to preserve audit trail requirements.
    */
-  async getTasks(organizationId: string): Promise<TaskResponseDto[]> {
+  async getApiKeyActorUserId(organizationId: string): Promise<string> {
+    const ownerMember = await db.member.findFirst({
+      where: {
+        organizationId,
+        deactivated: false,
+        isActive: true,
+        role: {
+          contains: 'owner',
+        },
+      },
+      orderBy: {
+        createdAt: 'asc',
+      },
+      select: {
+        userId: true,
+      },
+    });
+
+    if (!ownerMember?.userId) {
+      throw new BadRequestException(
+        'No active organization owner found. API key task updates require an active owner member.',
+      );
+    }
+
+    return ownerMember.userId;
+  }
+
+  /**
+   * Get all tasks for an organization
+   * @param organizationId - The organization ID
+   * @param assignmentFilter - Optional filter for assignment-based access (for employee/contractor roles)
+   */
+  async getTasks(
+    organizationId: string,
+    assignmentFilter: Prisma.TaskWhereInput = {},
+    options?: { includeRelations?: boolean },
+  ) {
     try {
       const tasks = await db.task.findMany({
         where: {
           organizationId,
+          ...assignmentFilter,
         },
+        ...(options?.includeRelations && {
+          include: {
+            controls: {
+              select: { id: true, name: true },
+            },
+            evidenceAutomations: {
+              select: {
+                id: true,
+                isEnabled: true,
+                name: true,
+                runs: {
+                  orderBy: { createdAt: 'desc' as const },
+                  take: 3,
+                  select: {
+                    status: true,
+                    success: true,
+                    evaluationStatus: true,
+                    createdAt: true,
+                    triggeredBy: true,
+                    runDuration: true,
+                  },
+                },
+              },
+            },
+          },
+        }),
         orderBy: [{ status: 'asc' }, { order: 'asc' }, { createdAt: 'asc' }],
       });
 
-      return tasks.map((task) => ({
-        id: task.id,
-        title: task.title,
-        description: task.description,
-        status: task.status,
-        createdAt: task.createdAt,
-        updatedAt: task.updatedAt,
-        taskTemplateId: task.taskTemplateId,
-      }));
+      if (options?.includeRelations) {
+        return { data: tasks, count: tasks.length };
+      }
+
+      return {
+        data: tasks.map((task) => ({
+          id: task.id,
+          title: task.title,
+          description: task.description,
+          status: task.status,
+          createdAt: task.createdAt,
+          updatedAt: task.updatedAt,
+          taskTemplateId: task.taskTemplateId,
+        })),
+        count: tasks.length,
+      };
     } catch (error) {
       console.error('Error fetching tasks:', error);
       throw new InternalServerErrorException('Failed to fetch tasks');
@@ -44,7 +135,7 @@ export class TasksService {
   async getTask(
     organizationId: string,
     taskId: string,
-  ): Promise<TaskResponseDto> {
+  ) {
     try {
       const task = await db.task.findFirst({
         where: {
@@ -53,6 +144,8 @@ export class TasksService {
         },
         include: {
           assignee: true,
+          controls: true,
+          approver: { include: { user: true } },
         },
       });
 
@@ -90,6 +183,41 @@ export class TasksService {
   }
 
   /**
+   * Get audit activity for a task
+   */
+  async getTaskActivity(
+    organizationId: string,
+    taskId: string,
+    skip = 0,
+    take = 10,
+  ) {
+    await this.verifyTaskAccess(organizationId, taskId);
+
+    const where = {
+      organizationId,
+      entityType: 'task' as const,
+      entityId: taskId,
+    };
+
+    const [logs, total] = await Promise.all([
+      db.auditLog.findMany({
+        where,
+        include: {
+          user: {
+            select: { id: true, name: true, email: true, image: true, isPlatformAdmin: true },
+          },
+        },
+        orderBy: { timestamp: 'desc' },
+        skip,
+        take,
+      }),
+      db.auditLog.count({ where }),
+    ]);
+
+    return { logs, total };
+  }
+
+  /**
    * Get all automation runs for a task
    */
   async getTaskAutomationRuns(organizationId: string, taskId: string) {
@@ -113,6 +241,54 @@ export class TasksService {
     });
 
     return runs;
+  }
+
+  /**
+   * Get page options for the tasks overview page
+   */
+  async getTaskPageOptions(organizationId: string, userId?: string) {
+    const [controls, frameworkInstances, organization, member] =
+      await Promise.all([
+        db.control.findMany({
+          where: { organizationId },
+          select: { id: true, name: true },
+          orderBy: { name: 'asc' },
+        }),
+        db.frameworkInstance.findMany({
+          where: { organizationId },
+          include: {
+            framework: { select: { id: true, name: true } },
+            requirementsMapped: { select: { controlId: true } },
+          },
+        }),
+        db.organization.findUnique({
+          where: { id: organizationId },
+          select: { name: true, evidenceApprovalEnabled: true },
+        }),
+        userId
+          ? db.member.findFirst({
+              where: { userId, organizationId, deactivated: false },
+              select: { role: true },
+            })
+          : null,
+      ]);
+
+    const roles =
+      member?.role
+        ?.split(',')
+        .map((r) => r.trim())
+        .filter(Boolean) || [];
+    const hasEvidenceExportAccess = roles.some((r) =>
+      ['auditor', 'admin', 'owner'].includes(r),
+    );
+
+    return {
+      controls,
+      frameworkInstances,
+      organizationName: organization?.name ?? null,
+      hasEvidenceExportAccess,
+      evidenceApprovalEnabled: organization?.evidenceApprovalEnabled ?? false,
+    };
   }
 
   /**
@@ -155,7 +331,10 @@ export class TasksService {
           changedByUserId,
         })
         .catch((error) => {
-          console.error('Failed to send bulk status change notifications:', error);
+          console.error(
+            'Failed to send bulk status change notifications:',
+            error,
+          );
         });
 
       return { updatedCount: result.count };
@@ -178,6 +357,16 @@ export class TasksService {
     changedByUserId: string,
   ): Promise<{ updatedCount: number }> {
     try {
+      if (assigneeId) {
+        const assigneeMember = await db.member.findFirst({
+          where: { id: assigneeId, organizationId },
+          include: { user: { select: { isPlatformAdmin: true } } },
+        });
+        if (assigneeMember?.user.isPlatformAdmin) {
+          throw new BadRequestException('Cannot assign a platform admin as assignee');
+        }
+      }
+
       const result = await db.task.updateMany({
         where: {
           id: {
@@ -206,7 +395,10 @@ export class TasksService {
           changedByUserId,
         })
         .catch((error) => {
-          console.error('Failed to send bulk assignee change notifications:', error);
+          console.error(
+            'Failed to send bulk assignee change notifications:',
+            error,
+          );
         });
 
       return { updatedCount: result.count };
@@ -220,15 +412,51 @@ export class TasksService {
   }
 
   /**
+   * Delete multiple tasks
+   */
+  async deleteTasks(
+    organizationId: string,
+    taskIds: string[],
+  ): Promise<{ deletedCount: number }> {
+    try {
+      const result = await db.task.deleteMany({
+        where: {
+          id: {
+            in: taskIds,
+          },
+          organizationId,
+        },
+      });
+
+      if (result.count === 0) {
+        throw new BadRequestException(
+          'No tasks were deleted. Check task IDs or organization access.',
+        );
+      }
+
+      return { deletedCount: result.count };
+    } catch (error) {
+      console.error('Error deleting tasks:', error);
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      throw new InternalServerErrorException('Failed to delete tasks');
+    }
+  }
+
+  /**
    * Update a single task
    */
   async updateTask(
     organizationId: string,
     taskId: string,
     updateData: {
+      title?: string;
+      description?: string;
       status?: TaskStatus;
       assigneeId?: string | null;
-      frequency?: string;
+      approverId?: string | null;
+      frequency?: TaskFrequency;
       department?: string;
       reviewDate?: Date | null;
     },
@@ -255,22 +483,46 @@ export class TasksService {
 
       // Prepare update data - Prisma handles updatedAt automatically
       const dataToUpdate: {
+        title?: string;
+        description?: string;
         status?: TaskStatus;
         assigneeId?: string | null;
-        frequency?: string;
+        approverId?: string | null;
+        frequency?: TaskFrequency;
         department?: string;
         reviewDate?: Date | null;
       } = {};
 
+      if (updateData.title !== undefined) {
+        dataToUpdate.title = updateData.title;
+      }
+      if (updateData.description !== undefined) {
+        dataToUpdate.description = updateData.description;
+      }
       if (updateData.status !== undefined) {
         dataToUpdate.status = updateData.status;
       }
       if (updateData.assigneeId !== undefined) {
-        // Convert null to undefined for Prisma, or keep string value
-        dataToUpdate.assigneeId = updateData.assigneeId === null ? null : updateData.assigneeId;
+        if (updateData.assigneeId !== null) {
+          const assigneeMember = await db.member.findFirst({
+            where: { id: updateData.assigneeId, organizationId },
+            include: { user: { select: { isPlatformAdmin: true } } },
+          });
+          if (assigneeMember?.user.isPlatformAdmin) {
+            throw new BadRequestException('Cannot assign a platform admin as assignee');
+          }
+        }
+        dataToUpdate.assigneeId =
+          updateData.assigneeId === null ? null : updateData.assigneeId;
+      }
+      if (updateData.approverId !== undefined) {
+        dataToUpdate.approverId =
+          updateData.approverId === null ? null : updateData.approverId;
       }
       if (updateData.frequency !== undefined) {
         dataToUpdate.frequency = updateData.frequency;
+        // When frequency changes, recalculate the review date
+        dataToUpdate.reviewDate = computeNextTaskReviewDate(updateData.frequency);
       }
       if (updateData.department !== undefined) {
         dataToUpdate.department = updateData.department;
@@ -278,6 +530,20 @@ export class TasksService {
       if (updateData.reviewDate !== undefined) {
         dataToUpdate.reviewDate = updateData.reviewDate;
       }
+
+      // When status changes to done, set review date based on frequency
+      if (updateData.status === TaskStatus.done && !updateData.reviewDate) {
+        const task = await db.task.findFirst({
+          where: { id: taskId, organizationId },
+          select: { frequency: true },
+        });
+        dataToUpdate.reviewDate = computeNextTaskReviewDate(task?.frequency);
+      }
+
+      // Get the current member for audit logging
+      const currentMember = await db.member.findFirst({
+        where: { userId: changedByUserId, organizationId, deactivated: false },
+      });
 
       // Update the task
       const updatedTask = await db.task.update({
@@ -291,8 +557,32 @@ export class TasksService {
         },
       });
 
-      // Send notifications for status changes
-      if (updateData.status !== undefined && existingTask.status !== updateData.status) {
+      // Write audit logs and send notifications for status changes
+      if (
+        updateData.status !== undefined &&
+        existingTask.status !== updateData.status
+      ) {
+        const oldStatusLabel = existingTask.status.replace('_', ' ');
+        const newStatusLabel = updateData.status.replace('_', ' ');
+
+        await db.auditLog.create({
+          data: {
+            organizationId,
+            userId: changedByUserId,
+            memberId: currentMember?.id ?? null,
+            entityType: 'task',
+            entityId: taskId,
+            description: `changed status from ${oldStatusLabel} to ${newStatusLabel}`,
+            data: {
+              action: 'update',
+              taskTitle: existingTask.title,
+              field: 'status',
+              oldValue: existingTask.status,
+              newValue: updateData.status,
+            },
+          },
+        });
+
         this.taskNotifierService
           .notifyStatusChange({
             organizationId,
@@ -307,11 +597,52 @@ export class TasksService {
           });
       }
 
-      // Send notifications for assignee changes
+      // Write audit logs and send notifications for assignee changes
       if (
         updateData.assigneeId !== undefined &&
         (existingTask.assigneeId ?? null) !== (updateData.assigneeId ?? null)
       ) {
+        // Resolve assignee names for the audit log
+        const [oldAssignee, newAssignee] = await Promise.all([
+          existingTask.assigneeId
+            ? db.member.findUnique({
+                where: { id: existingTask.assigneeId },
+                include: { user: { select: { name: true, email: true } } },
+              })
+            : null,
+          updateData.assigneeId
+            ? db.member.findUnique({
+                where: { id: updateData.assigneeId },
+                include: { user: { select: { name: true, email: true } } },
+              })
+            : null,
+        ]);
+
+        const oldName = oldAssignee
+          ? oldAssignee.user.name || oldAssignee.user.email
+          : 'unassigned';
+        const newName = newAssignee
+          ? newAssignee.user.name || newAssignee.user.email
+          : 'unassigned';
+
+        await db.auditLog.create({
+          data: {
+            organizationId,
+            userId: changedByUserId,
+            memberId: currentMember?.id ?? null,
+            entityType: 'task',
+            entityId: taskId,
+            description: `changed assignee from ${oldName} to ${newName}`,
+            data: {
+              action: 'update',
+              taskTitle: existingTask.title,
+              field: 'assignee',
+              oldValue: existingTask.assigneeId,
+              newValue: updateData.assigneeId,
+            },
+          },
+        });
+
         this.taskNotifierService
           .notifyAssigneeChange({
             organizationId,
@@ -322,7 +653,10 @@ export class TasksService {
             changedByUserId,
           })
           .catch((error) => {
-            console.error('Failed to send assignee change notifications:', error);
+            console.error(
+              'Failed to send assignee change notifications:',
+              error,
+            );
           });
       }
 
@@ -334,5 +668,495 @@ export class TasksService {
       }
       throw new InternalServerErrorException('Failed to update task');
     }
+  }
+
+  /**
+   * Create a new task
+   */
+  async createTask(
+    organizationId: string,
+    createData: {
+      title: string;
+      description: string;
+      assigneeId?: string | null;
+      frequency?: string | null;
+      department?: string | null;
+      controlIds?: string[];
+      taskTemplateId?: string | null;
+      vendorId?: string | null;
+    },
+  ): Promise<TaskResponseDto> {
+    try {
+      // Get automation status from template if one is selected
+      let automationStatus: 'AUTOMATED' | 'MANUAL' = 'AUTOMATED';
+      if (createData.taskTemplateId) {
+        const template = await db.frameworkEditorTaskTemplate.findUnique({
+          where: { id: createData.taskTemplateId },
+          select: { automationStatus: true },
+        });
+        if (template) {
+          automationStatus = template.automationStatus;
+        }
+      }
+
+      const task = await db.task.create({
+        data: {
+          title: createData.title,
+          description: createData.description,
+          assigneeId: createData.assigneeId || null,
+          organizationId,
+          status: 'todo',
+          order: 0,
+          frequency: (createData.frequency as TaskFrequency) || null,
+          department: (createData.department as Departments) || null,
+          automationStatus,
+          taskTemplateId: createData.taskTemplateId || null,
+          ...(createData.controlIds &&
+            createData.controlIds.length > 0 && {
+              controls: {
+                connect: createData.controlIds.map((id) => ({ id })),
+              },
+            }),
+          ...(createData.vendorId && {
+            vendors: {
+              connect: { id: createData.vendorId },
+            },
+          }),
+        },
+      });
+
+      return {
+        id: task.id,
+        title: task.title,
+        description: task.description,
+        status: task.status,
+        createdAt: task.createdAt,
+        updatedAt: task.updatedAt,
+        taskTemplateId: task.taskTemplateId,
+      };
+    } catch (error) {
+      console.error('Error creating task:', error);
+      throw new InternalServerErrorException('Failed to create task');
+    }
+  }
+
+  /**
+   * Regenerate task from its associated template
+   */
+  async regenerateFromTemplate(
+    organizationId: string,
+    taskId: string,
+  ) {
+    const task = await db.task.findFirst({
+      where: { id: taskId, organizationId },
+      include: { taskTemplate: true },
+    });
+
+    if (!task) {
+      throw new NotFoundException('Task not found');
+    }
+
+    if (!task.taskTemplate) {
+      throw new BadRequestException('Task has no associated template to regenerate from');
+    }
+
+    const updated = await db.task.update({
+      where: { id: taskId },
+      data: {
+        title: task.taskTemplate.name,
+        description: task.taskTemplate.description,
+        automationStatus: task.taskTemplate.automationStatus,
+      },
+    });
+
+    return { id: updated.id, title: updated.title };
+  }
+
+  /**
+   * Reorder tasks (update order and status for multiple tasks)
+   */
+  async reorderTasks(
+    organizationId: string,
+    updates: { id: string; order: number; status: TaskStatus }[],
+  ): Promise<void> {
+    for (const { id, order, status } of updates) {
+      await db.task.update({
+        where: { id, organizationId },
+        data: { order, status },
+      });
+    }
+  }
+
+  /**
+   * Delete a single task by ID
+   */
+  async deleteTask(
+    organizationId: string,
+    taskId: string,
+  ): Promise<void> {
+    const task = await db.task.findFirst({
+      where: {
+        id: taskId,
+        organizationId,
+      },
+    });
+
+    if (!task) {
+      throw new NotFoundException('Task not found');
+    }
+
+    await db.task.delete({
+      where: { id: taskId },
+    });
+  }
+
+  /**
+   * Submit a task for review (moves status to in_review)
+   */
+  async submitForReview(
+    organizationId: string,
+    taskId: string,
+    userId: string,
+    approverId: string,
+  ): Promise<TaskResponseDto> {
+    const task = await db.task.findFirst({
+      where: { id: taskId, organizationId },
+    });
+
+    if (!task) {
+      throw new BadRequestException('Task not found or access denied');
+    }
+
+    if (task.status === 'in_review') {
+      throw new BadRequestException('Task is already in review');
+    }
+
+    if (task.status === 'done') {
+      throw new BadRequestException('Task is already done');
+    }
+
+    // Verify the approver exists and is active
+    const approver = await db.member.findFirst({
+      where: { id: approverId, organizationId, deactivated: false },
+      include: { user: true },
+    });
+
+    if (!approver) {
+      throw new BadRequestException('Approver not found or is deactivated');
+    }
+
+    if (approver.user.isPlatformAdmin) {
+      throw new BadRequestException('Cannot assign a platform admin as approver');
+    }
+
+    const currentMember = await db.member.findFirst({
+      where: { userId, organizationId, deactivated: false },
+    });
+
+    const updatedTask = await db.$transaction(async (tx) => {
+      const updated = await tx.task.update({
+        where: { id: taskId, organizationId },
+        data: {
+          status: TaskStatus.in_review,
+          previousStatus: task.status,
+          approverId,
+        },
+        include: { assignee: true, approver: true },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          organizationId,
+          userId,
+          memberId: currentMember?.id ?? null,
+          entityType: 'task',
+          entityId: taskId,
+          description: `submitted evidence for review by ${approver.user.name || approver.user.email}`,
+          data: {
+            action: 'review',
+            taskTitle: task.title,
+            approverId,
+            previousStatus: task.status,
+          },
+        },
+      });
+
+      return updated;
+    });
+
+    // Notify approver (fire-and-forget)
+    this.taskNotifierService
+      .notifyEvidenceReviewRequested({
+        organizationId,
+        taskId,
+        taskTitle: task.title,
+        submittedByUserId: userId,
+        approverMemberId: approverId,
+      })
+      .catch((error) => {
+        console.error(
+          'Failed to send evidence review request notifications:',
+          error,
+        );
+      });
+
+    return updatedTask;
+  }
+
+  /**
+   * Bulk submit tasks for review
+   */
+  async bulkSubmitForReview(
+    organizationId: string,
+    taskIds: string[],
+    userId: string,
+    approverId: string,
+  ): Promise<{ submittedCount: number }> {
+    // Verify the approver exists and is active
+    const approver = await db.member.findFirst({
+      where: { id: approverId, organizationId, deactivated: false },
+      include: { user: true },
+    });
+
+    if (!approver) {
+      throw new BadRequestException('Approver not found or is deactivated');
+    }
+
+    if (approver.user.isPlatformAdmin) {
+      throw new BadRequestException('Cannot assign a platform admin as approver');
+    }
+
+    const tasks = await db.task.findMany({
+      where: {
+        id: { in: taskIds },
+        organizationId,
+        status: { notIn: ['in_review', 'done'] },
+      },
+    });
+
+    if (tasks.length === 0) {
+      throw new BadRequestException('No eligible tasks found for review');
+    }
+
+    const currentMember = await db.member.findFirst({
+      where: { userId, organizationId, deactivated: false },
+    });
+
+    await db.$transaction(async (tx) => {
+      for (const task of tasks) {
+        await tx.task.update({
+          where: { id: task.id, organizationId },
+          data: {
+            status: TaskStatus.in_review,
+            previousStatus: task.status,
+            approverId,
+          },
+        });
+
+        await tx.auditLog.create({
+          data: {
+            organizationId,
+            userId,
+            memberId: currentMember?.id ?? null,
+            entityType: 'task',
+            entityId: task.id,
+            description: `submitted evidence for review by ${approver.user.name || approver.user.email}`,
+            data: {
+              action: 'review',
+              taskTitle: task.title,
+              approverId,
+              previousStatus: task.status,
+            },
+          },
+        });
+      }
+    });
+
+    // Send a single notification for all tasks (fire-and-forget)
+    this.taskNotifierService
+      .notifyBulkEvidenceReviewRequested({
+        organizationId,
+        taskIds: tasks.map((t) => t.id),
+        taskCount: tasks.length,
+        submittedByUserId: userId,
+        approverMemberId: approverId,
+      })
+      .catch((error) => {
+        console.error(
+          'Failed to send bulk evidence review request notifications:',
+          error,
+        );
+      });
+
+    return { submittedCount: tasks.length };
+  }
+
+  /**
+   * Approve a task (moves status from in_review to done)
+   */
+  async approveTask(
+    organizationId: string,
+    taskId: string,
+    userId: string,
+  ): Promise<TaskResponseDto> {
+    const task = await db.task.findFirst({
+      where: { id: taskId, organizationId },
+      include: {
+        approver: { include: { user: true } },
+        assignee: { include: { user: true } },
+      },
+    });
+
+    if (!task) {
+      throw new BadRequestException('Task not found or access denied');
+    }
+
+    if (task.status !== 'in_review') {
+      throw new BadRequestException('Task must be in review to approve');
+    }
+
+    // Verify the current user is the assigned approver
+    const currentMember = await db.member.findFirst({
+      where: { userId, organizationId, deactivated: false },
+      include: { user: true },
+    });
+
+    if (!currentMember) {
+      throw new ForbiddenException('User is not a member of this organization');
+    }
+
+    if (task.approverId !== currentMember.id) {
+      throw new ForbiddenException(
+        'Only the assigned approver can approve this task',
+      );
+    }
+
+    const now = new Date();
+
+    const updatedTask = await db.$transaction(async (tx) => {
+      const updated = await tx.task.update({
+        where: { id: taskId, organizationId },
+        data: {
+          status: TaskStatus.done,
+          approvedAt: now,
+          reviewDate: computeNextTaskReviewDate(task.frequency),
+          previousStatus: null,
+        },
+        include: { assignee: true, approver: true },
+      });
+
+      const assigneeName = task.assignee
+        ? task.assignee.user.name || task.assignee.user.email
+        : 'Unknown';
+
+      await tx.auditLog.create({
+        data: {
+          organizationId,
+          userId,
+          memberId: currentMember.id,
+          entityType: 'task',
+          entityId: taskId,
+          description: `approved evidence by ${assigneeName}`,
+          data: {
+            action: 'approve',
+            taskTitle: task.title,
+            assigneeName,
+          },
+        },
+      });
+
+      return updated;
+    });
+
+    return updatedTask;
+  }
+
+  /**
+   * Reject a task (reverts status from in_review to previousStatus)
+   */
+  async rejectTask(
+    organizationId: string,
+    taskId: string,
+    userId: string,
+  ): Promise<TaskResponseDto> {
+    const task = await db.task.findFirst({
+      where: { id: taskId, organizationId },
+      include: {
+        approver: { include: { user: true } },
+        assignee: { include: { user: true } },
+      },
+    });
+
+    if (!task) {
+      throw new BadRequestException('Task not found or access denied');
+    }
+
+    if (task.status !== 'in_review') {
+      throw new BadRequestException('Task must be in review to reject');
+    }
+
+    // Verify the current user is the assigned approver or an admin/owner
+    const currentMember = await db.member.findFirst({
+      where: { userId, organizationId, deactivated: false },
+      include: { user: true },
+    });
+
+    if (!currentMember) {
+      throw new ForbiddenException('User is not a member of this organization');
+    }
+
+    const memberRoles =
+      currentMember.role?.split(',').map((r: string) => r.trim()) ?? [];
+    const isAdminOrOwner =
+      memberRoles.includes('admin') || memberRoles.includes('owner');
+    const isApprover = task.approverId === currentMember.id;
+
+    if (!isApprover && !isAdminOrOwner) {
+      throw new ForbiddenException(
+        'Only the assigned approver or an admin/owner can reject this task',
+      );
+    }
+
+    const isCancellation = !isApprover && isAdminOrOwner;
+    const revertStatus = task.previousStatus ?? TaskStatus.todo;
+
+    const updatedTask = await db.$transaction(async (tx) => {
+      const updated = await tx.task.update({
+        where: { id: taskId, organizationId },
+        data: {
+          status: revertStatus,
+          previousStatus: null,
+          approverId: null,
+          approvedAt: null,
+        },
+        include: { assignee: true, approver: true },
+      });
+
+      const assigneeName = task.assignee
+        ? task.assignee.user.name || task.assignee.user.email
+        : 'Unknown';
+
+      await tx.auditLog.create({
+        data: {
+          organizationId,
+          userId,
+          memberId: currentMember.id,
+          entityType: 'task',
+          entityId: taskId,
+          description: isCancellation
+            ? `cancelled evidence review for ${assigneeName}`
+            : `rejected evidence by ${assigneeName}`,
+          data: {
+            action: isCancellation ? 'reject' : 'reject',
+            taskTitle: task.title,
+            revertedToStatus: revertStatus,
+          },
+        },
+      });
+
+      return updated;
+    });
+
+    return updatedTask;
   }
 }

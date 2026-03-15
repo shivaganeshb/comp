@@ -2,7 +2,8 @@ import { auth } from '@/app/lib/auth';
 import { env } from '@/env.mjs';
 import { initializeServer } from '@comp/analytics/server';
 import { cn } from '@comp/ui/cn';
-import '@comp/ui/globals.css';
+import './globals.css';
+import '@trycompai/design-system/globals.css';
 import { GeistMono } from 'geist/font/mono';
 import type { Metadata } from 'next';
 import localFont from 'next/font/local';
@@ -70,8 +71,6 @@ const font = localFont({
   display: 'swap',
   variable: '--font-general-sans',
 });
-
-export const preferredRegion = ['auto'];
 
 if (env.NEXT_PUBLIC_POSTHOG_KEY && env.NEXT_PUBLIC_POSTHOG_HOST) {
   initializeServer({

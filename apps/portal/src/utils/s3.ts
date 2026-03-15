@@ -13,6 +13,7 @@ export const BUCKET_NAME = getBucketName('attachments');
 // Storage provider instance
 let storageProviderInstance: StorageProvider | null = null;
 
+<<<<<<< HEAD
 try {
   const providerType = getStorageProviderType();
 
@@ -24,6 +25,69 @@ try {
       storageProviderInstance = getStorageProvider();
     } catch (error) {
       console.error('Storage provider initialization failed:', error);
+=======
+if (!APP_AWS_ACCESS_KEY_ID || !APP_AWS_SECRET_ACCESS_KEY || !BUCKET_NAME || !APP_AWS_REGION) {
+  console.warn(
+    'AWS S3 credentials or configuration missing in environment variables. File upload features will be unavailable.',
+  );
+}
+
+// Create a single S3 client instance
+// Add null checks or assertions if the checks above don't guarantee non-null values
+export const s3Client = new S3Client({
+  endpoint: APP_AWS_ENDPOINT || undefined,
+  region: APP_AWS_REGION!,
+  credentials: {
+    accessKeyId: APP_AWS_ACCESS_KEY_ID!,
+    secretAccessKey: APP_AWS_SECRET_ACCESS_KEY!,
+  },
+  forcePathStyle: !!APP_AWS_ENDPOINT,
+});
+
+// Ensure BUCKET_NAME is exported and non-null checked if needed elsewhere explicitly
+if (!BUCKET_NAME && process.env.NODE_ENV === 'production') {
+  console.error('AWS_BUCKET_NAME is not defined.');
+}
+
+/**
+ * Validates if a hostname is a valid AWS S3 endpoint
+ */
+function isValidS3Host(host: string): boolean {
+  const normalizedHost = host.toLowerCase();
+
+  // Must end with amazonaws.com
+  if (!normalizedHost.endsWith('.amazonaws.com')) {
+    return false;
+  }
+
+  // Check against known S3 patterns
+  return /^([\w.-]+\.)?(s3|s3-[\w-]+|s3-website[\w.-]+|s3-accesspoint|s3-control)(\.[\w-]+)?\.amazonaws\.com$/.test(
+    normalizedHost,
+  );
+}
+
+/**
+ * Extracts S3 object key from either a full S3 URL or a plain key
+ * @throws {Error} If the input is invalid or potentially malicious
+ */
+export function extractS3KeyFromUrl(url: string): string {
+  if (!url || typeof url !== 'string') {
+    throw new Error('Invalid input: URL must be a non-empty string');
+  }
+
+  // Try to parse as URL
+  let parsedUrl: URL | null = null;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    // Not a valid URL - will handle as S3 key below
+  }
+
+  if (parsedUrl) {
+    // Validate it's an S3 URL
+    if (!isValidS3Host(parsedUrl.host)) {
+      throw new Error('Invalid URL: Not a valid S3 endpoint');
+>>>>>>> upstream/main
     }
   }
 } catch (error) {

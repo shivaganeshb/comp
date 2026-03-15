@@ -1,8 +1,7 @@
 'use client';
 
-import { Button } from '@comp/ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@comp/ui/select';
-import { AlertCircle, CheckCircle2, Loader2, RefreshCw, Settings } from 'lucide-react';
+import { Button, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@trycompai/design-system';
+import { AlertCircle, CheckCircle2, Loader2, RefreshCw, Settings, ShieldCheck } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { FindingsTable } from './FindingsTable';
 
@@ -22,6 +21,7 @@ interface ResultsViewProps {
   isScanning: boolean;
   needsConfiguration?: boolean;
   onConfigure?: () => void;
+  canRunScan?: boolean;
 }
 
 const severityOrder = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
@@ -32,6 +32,7 @@ export function ResultsView({
   isScanning,
   needsConfiguration,
   onConfigure,
+  canRunScan = true,
 }: ResultsViewProps) {
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [selectedSeverity, setSelectedSeverity] = useState<string>('all');
@@ -43,6 +44,9 @@ export function ResultsView({
   const uniqueSeverities = Array.from(
     new Set(findings.map((f) => f.severity).filter(Boolean) as string[]),
   );
+
+  const allPassed =
+    findings.length > 0 && findings.every((f) => f.status === 'passed');
 
   const filteredFindings = findings.filter((finding) => {
     const matchesStatus = selectedStatus === 'all' || finding.status === selectedStatus;
@@ -89,8 +93,7 @@ export function ResultsView({
             </div>
           </div>
           <div className="mt-3 ml-8">
-            <Button size="sm" variant="outline" onClick={onConfigure}>
-              <Settings className="h-4 w-4 mr-2" />
+            <Button size="sm" variant="outline" onClick={onConfigure} iconLeft={<Settings className="h-4 w-4" />}>
               Configure
             </Button>
           </div>
@@ -119,36 +122,54 @@ export function ResultsView({
         </div>
       )}
 
+      {allPassed && !isScanning && (
+        <div className="flex items-center gap-3 rounded-lg border border-green-200 bg-green-50 p-4 dark:border-green-900 dark:bg-green-950/50">
+          <ShieldCheck className="h-5 w-5 text-green-600 dark:text-green-400 flex-shrink-0" />
+          <div className="flex-1">
+            <p className="text-sm font-medium text-green-800 dark:text-green-300">
+              All checks passed
+            </p>
+            <p className="text-xs text-green-700/80 dark:text-green-400/80">
+              No security issues found across {findings.length} check{findings.length !== 1 ? 's' : ''}
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between">
         {findings.length > 0 ? (
           <div className="flex flex-wrap items-center gap-2">
-            <Select value={selectedSeverity} onValueChange={setSelectedSeverity}>
-              <SelectTrigger className="h-9 w-[160px] rounded-lg border-dashed">
-                <SelectValue placeholder="All Severities" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Severities</SelectItem>
-                {uniqueSeverities.map((severity) => (
-                  <SelectItem key={severity} value={severity}>
-                    {severity}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="w-[160px]">
+              <Select value={selectedSeverity} onValueChange={(v) => { if (v) setSelectedSeverity(v); }}>
+                <SelectTrigger size="sm">
+                  <SelectValue placeholder="All Severities" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Severities</SelectItem>
+                  {uniqueSeverities.map((severity) => (
+                    <SelectItem key={severity} value={severity}>
+                      {severity}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
 
-            <Select value={selectedStatus} onValueChange={setSelectedStatus}>
-              <SelectTrigger className="h-9 w-[160px] rounded-lg border-dashed">
-                <SelectValue placeholder="All Statuses" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Statuses</SelectItem>
-                {uniqueStatuses.map((status) => (
-                  <SelectItem key={status} value={status}>
-                    {status}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="w-[160px]">
+              <Select value={selectedStatus} onValueChange={(v) => { if (v) setSelectedStatus(v); }}>
+                <SelectTrigger size="sm">
+                  <SelectValue placeholder="All Statuses" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Statuses</SelectItem>
+                  {uniqueStatuses.map((status) => (
+                    <SelectItem key={status} value={status}>
+                      {status}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
 
             {(selectedSeverity !== 'all' || selectedStatus !== 'all') && (
               <p className="text-muted-foreground ml-2 text-sm">
@@ -160,14 +181,16 @@ export function ResultsView({
           <div />
         )}
 
-        <Button
-          onClick={handleRunScan}
-          disabled={isScanning}
-          className="cursor-pointer gap-2 rounded-lg text-white"
-        >
-          <RefreshCw className={`h-4 w-4 ${isScanning ? 'animate-spin' : ''}`} />
-          {isScanning ? 'Scanning...' : 'Run Scan'}
-        </Button>
+        {canRunScan && (
+          <Button
+            onClick={handleRunScan}
+            disabled={isScanning}
+            loading={isScanning}
+            iconLeft={!isScanning ? <RefreshCw className="h-4 w-4" /> : undefined}
+          >
+            {isScanning ? 'Scanning...' : 'Run Scan'}
+          </Button>
+        )}
       </div>
 
       {sortedFindings.length > 0 ? (

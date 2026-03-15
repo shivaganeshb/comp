@@ -1,6 +1,9 @@
+import { apiClient } from '@/lib/api-client';
+import { secretsListKey } from '@/app/(app)/[orgId]/settings/secrets/hooks/useSecrets';
 import { AlertCircle, CheckCircle2, Key } from 'lucide-react';
 import { memo, useState } from 'react';
 import { toast } from 'sonner';
+import { mutate as globalMutate } from 'swr';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
 import { Label } from '../../ui/label';
@@ -8,7 +11,7 @@ import { Label } from '../../ui/label';
 interface PromptSecretProps {
   input?: any; // Will be the parsed input from the tool
   output?: any;
-  state: 'input-available' | 'output-available' | 'output-error' | 'input-streaming';
+  state: string;
   errorText?: string;
   orgId: string;
   onSecretAdded?: (secretName: string) => void;
@@ -58,27 +61,22 @@ export const PromptSecret = memo(function PromptSecret({
         value,
         description: description || secretData?.description || '',
         category: secretData?.category || 'automation',
-        organizationId: orgId,
       };
 
-      const response = await fetch('/api/secrets', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
+      const response = await apiClient.post<{ secret: { name: string } }>('/v1/secrets', payload);
 
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to create secret');
+      if (response.error) {
+        throw new Error(response.error);
       }
 
-      const { secret } = await response.json();
+      const secretName = response.data?.secret?.name ?? payload.name;
 
-      toast.success(`Secret "${secret.name}" created successfully`);
+      toast.success(`Secret "${secretName}" created successfully`);
       setIsComplete(true);
-      onSecretAdded?.(secret.name);
+      onSecretAdded?.(secretName);
+
+      // Invalidate any mounted useSecrets hooks
+      globalMutate(secretsListKey());
 
       // Reset form
       setValue('');
@@ -129,14 +127,14 @@ export const PromptSecret = memo(function PromptSecret({
   }
 
   return (
-    <div className="rounded-xs border bg-card p-4 space-y-4">
+    <div className="rounded-xs border bg-card p-4 space-y-4 overflow-hidden">
       <div className="flex items-start gap-3">
-        <div className="p-2 rounded-xs bg-primary/10">
+        <div className="shrink-0 p-2 rounded-xs bg-primary/10">
           <Key className="h-4 w-4 text-primary" />
         </div>
-        <div className="flex-1">
+        <div className="flex-1 min-w-0">
           <h3 className="font-medium text-sm">Secret Required</h3>
-          <p className="text-sm text-muted-foreground mt-1">
+          <p className="text-sm text-muted-foreground mt-1 break-words">
             {secretData?.reason || 'This automation needs a secret to continue.'}
           </p>
         </div>

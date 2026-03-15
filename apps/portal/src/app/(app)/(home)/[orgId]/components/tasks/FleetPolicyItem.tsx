@@ -2,27 +2,42 @@
 
 import { useMemo, useState } from 'react';
 
-import { Button } from '@comp/ui/button';
-import { cn } from '@comp/ui/cn';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@comp/ui/tooltip';
-import { CheckCircle2, HelpCircle, Image, MoreVertical, Upload, XCircle } from 'lucide-react';
 import {
+  Button,
+  cn,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from '@comp/ui/dropdown-menu';
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@trycompai/design-system';
+import {
+  CheckmarkFilled,
+  CloseOutline,
+  Help,
+  Image as ImageIcon,
+  OverflowMenuVertical,
+  TrashCan,
+  Upload,
+} from '@trycompai/design-system/icons';
 import type { FleetPolicy } from '../../types';
-import { PolicyImageUploadModal } from './PolicyImageUploadModal';
 import { PolicyImagePreviewModal } from './PolicyImagePreviewModal';
+import { PolicyImageUploadModal } from './PolicyImageUploadModal';
+import { PolicyImageResetModal } from './PolicyImageResetModal';
 
 interface FleetPolicyItemProps {
   policy: FleetPolicy;
+  organizationId: string;
+  onRefresh: () => void;
 }
 
-export function FleetPolicyItem({ policy }: FleetPolicyItemProps) {
+export function FleetPolicyItem({ policy, organizationId, onRefresh }: FleetPolicyItemProps) {
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [isRemoveOpen, setIsRemoveOpen] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
   const actions = useMemo(() => {
@@ -31,8 +46,13 @@ export function FleetPolicyItem({ policy }: FleetPolicyItemProps) {
         return [
           {
             label: 'Preview images',
-            renderIcon: () => <Image className="mr-2 h-4 w-4" />,
+            renderIcon: () => <span className="mr-2"><ImageIcon size={16} /></span>,
             onClick: () => setIsPreviewOpen(true),
+          },
+          {
+            label: 'Remove images',
+            renderIcon: () => <span className="mr-2"><TrashCan size={16} /></span>,
+            onClick: () => setIsRemoveOpen(true),
           },
         ];
       }
@@ -43,10 +63,10 @@ export function FleetPolicyItem({ policy }: FleetPolicyItemProps) {
     return [
       {
         label: 'Upload images',
-        renderIcon: () => <Upload className="mr-2 h-4 w-4" />,
+        renderIcon: () => <span className="mr-2"><Upload size={16} /></span>,
         onClick: () => setIsUploadOpen(true),
-      }
-    ]
+      },
+    ];
   }, [policy]);
 
   const hasActions = useMemo(() => actions.length > 0, [actions]);
@@ -64,24 +84,26 @@ export function FleetPolicyItem({ policy }: FleetPolicyItemProps) {
           {policy.name === 'MDM Enabled' && policy.response === 'fail' && (
             <TooltipProvider>
               <Tooltip>
-                <TooltipTrigger asChild>
-                  <button type="button" className="text-muted-foreground hover:text-foreground transition-colors">
-                    <HelpCircle size={14} />
-                  </button>
+                <TooltipTrigger>
+                  <span className="text-muted-foreground hover:text-foreground transition-colors inline-flex">
+                    <Help size={14} />
+                  </span>
                 </TooltipTrigger>
-                <TooltipContent className="max-w-xs">
-                  <p>
-                    There are additional steps required to enable MDM. Please check{' '}
-                    <a
-                      href="https://trycomp.ai/docs/device-agent#mdm-user-guide"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-600 dark:text-blue-400 hover:underline"
-                    >
-                      this documentation
-                    </a>
-                    .
-                  </p>
+                <TooltipContent>
+                  <div className="max-w-xs">
+                    <p>
+                      There are additional steps required to enable MDM. Please check{' '}
+                      <a
+                        href="https://trycomp.ai/docs/device-agent#mdm-user-guide"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 dark:text-blue-400 hover:underline"
+                      >
+                        this documentation
+                      </a>
+                      .
+                    </p>
+                  </div>
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
@@ -90,24 +112,23 @@ export function FleetPolicyItem({ policy }: FleetPolicyItemProps) {
         <div className="flex items-center gap-3">
           {policy.response === 'pass' ? (
             <div className="flex items-center gap-1 text-primary">
-              <CheckCircle2 size={16} />
+              <CheckmarkFilled size={16} />
               <span className="text-sm">Pass</span>
             </div>
           ) : (
             <div className="flex items-center gap-1 text-red-600 dark:text-red-400">
-              <XCircle size={16} />
+              <CloseOutline size={16} />
               <span className="text-sm">Fail</span>
             </div>
           )}
           <DropdownMenu open={dropdownOpen} onOpenChange={setDropdownOpen}>
-            <DropdownMenuTrigger asChild>
+            <DropdownMenuTrigger>
               <Button
                 variant="ghost"
-                size="sm"
-                className="h-8 w-8 p-0"
                 disabled={!hasActions}
+                iconLeft={<OverflowMenuVertical size={16} />}
               >
-                <MoreVertical className="h-4 w-4" />
+                Actions
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
@@ -130,13 +151,22 @@ export function FleetPolicyItem({ policy }: FleetPolicyItemProps) {
       </div>
       <PolicyImageUploadModal
         policy={policy}
+        organizationId={organizationId}
         open={isUploadOpen}
         onOpenChange={setIsUploadOpen}
+        onRefresh={onRefresh}
       />
       <PolicyImagePreviewModal
         images={policy?.attachments || []}
         open={isPreviewOpen}
         onOpenChange={setIsPreviewOpen}
+      />
+      <PolicyImageResetModal
+        open={isRemoveOpen}
+        organizationId={organizationId}
+        policyId={policy.id}
+        onOpenChange={setIsRemoveOpen}
+        onRefresh={onRefresh}
       />
     </>
   );

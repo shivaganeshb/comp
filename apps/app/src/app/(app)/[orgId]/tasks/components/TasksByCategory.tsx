@@ -3,8 +3,8 @@
 import type { Member, Task, User } from '@db';
 import { ArrowLeft, Folder } from 'lucide-react';
 import Image from 'next/image';
-import { usePathname, useRouter } from 'next/navigation';
-import { useMemo, useState } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useMemo } from 'react';
 import { AutomationIndicator } from './AutomationIndicator';
 import { TaskStatusSelector } from './TaskStatusSelector';
 
@@ -53,6 +53,7 @@ interface CategoryGroup {
 const statusPalette = {
   todo: { indicator: 'bg-border', dot: 'bg-border', label: 'text-muted-foreground' },
   in_progress: { indicator: 'bg-blue-400/70', dot: 'bg-blue-400', label: 'text-blue-400' },
+  in_review: { indicator: 'bg-orange-400/70', dot: 'bg-orange-400', label: 'text-orange-400' },
   done: { indicator: 'bg-primary/70', dot: 'bg-primary', label: 'text-primary' },
   failed: { indicator: 'bg-red-500/70', dot: 'bg-red-500', label: 'text-red-500' },
   not_relevant: { indicator: 'bg-border', dot: 'bg-border', label: 'text-muted-foreground' },
@@ -61,7 +62,7 @@ const statusPalette = {
 export function TasksByCategory({ tasks, members, statusFilter }: TasksByCategoryProps) {
   const router = useRouter();
   const pathname = usePathname();
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const searchParams = useSearchParams();
 
   // Group tasks by their first control, or "Uncategorized"
   const categories = useMemo(() => {
@@ -109,6 +110,13 @@ export function TasksByCategory({ tasks, members, statusFilter }: TasksByCategor
     return sortedCategories;
   }, [tasks]);
 
+  // Selected category from URL so it survives back navigation
+  const categoryFromUrl = searchParams.get('category');
+  const selectedCategory = useMemo(() => {
+    if (!categoryFromUrl) return null;
+    return categories.some((c) => c.id === categoryFromUrl) ? categoryFromUrl : null;
+  }, [categoryFromUrl, categories]);
+
   // Calculate stats for a category
   const getCategoryStats = (categoryTasks: Task[]) => {
     const total = categoryTasks.length;
@@ -128,7 +136,19 @@ export function TasksByCategory({ tasks, members, statusFilter }: TasksByCategor
   };
 
   const handleCategoryClick = (categoryId: string) => {
-    setSelectedCategory(selectedCategory === categoryId ? null : categoryId);
+    const next = selectedCategory === categoryId ? null : categoryId;
+    const params = new URLSearchParams(searchParams.toString());
+    if (next) params.set('category', next);
+    else params.delete('category');
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname);
+  };
+
+  const handleBackToCategories = () => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete('category');
+    const query = params.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname);
   };
 
   // If a category is selected, show only that category's tasks
@@ -211,7 +231,7 @@ export function TasksByCategory({ tasks, members, statusFilter }: TasksByCategor
       {/* Back button and category header */}
       <div className="flex items-center justify-between">
         <button
-          onClick={() => setSelectedCategory(null)}
+          onClick={handleBackToCategories}
           className="inline-flex items-center gap-2 rounded-sm border border-border/60 px-3 py-1.5 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground transition-colors hover:bg-muted/20 hover:text-foreground"
         >
           <ArrowLeft className="h-3 w-3" />

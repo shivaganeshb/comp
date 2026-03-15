@@ -9,11 +9,13 @@ WORKDIR /app
 COPY package.json bun.lock ./
 
 # Copy all workspace package.json files
+COPY packages/auth/package.json ./packages/auth/
 COPY packages/db/package.json ./packages/db/
 COPY packages/utils/package.json ./packages/utils/
 COPY packages/integration-platform/package.json ./packages/integration-platform/
 COPY packages/tsconfig/package.json ./packages/tsconfig/
 COPY packages/email/package.json ./packages/email/
+COPY packages/company/package.json ./packages/company/
 
 # Copy API package.json
 COPY apps/api/package.json ./apps/api/
@@ -29,11 +31,13 @@ FROM deps AS builder
 WORKDIR /app
 
 # Copy workspace packages source
+COPY packages/auth ./packages/auth
 COPY packages/db ./packages/db
 COPY packages/utils ./packages/utils
 COPY packages/integration-platform ./packages/integration-platform
 COPY packages/tsconfig ./packages/tsconfig
 COPY packages/email ./packages/email
+COPY packages/company ./packages/company
 
 # Copy API source
 COPY apps/api ./apps/api
@@ -42,9 +46,11 @@ COPY apps/api ./apps/api
 COPY --from=deps /app/node_modules ./node_modules
 
 # Build workspace packages
+RUN cd packages/auth && bun run build && cd ../..
 RUN cd packages/db && bun run build && cd ../..
 RUN cd packages/integration-platform && bun run build && cd ../..
 RUN cd packages/email && bun run build && cd ../..
+RUN cd packages/company && bun run build && cd ../..
 
 # Generate Prisma client for API (copy schema and generate)
 RUN cd packages/db && node scripts/combine-schemas.js && cd ../..
@@ -57,12 +63,12 @@ RUN cd apps/api && bunx nest build
 # =============================================================================
 # STAGE 3: Production Runtime
 # =============================================================================
-FROM node:20-alpine AS production
+FROM node:20-slim AS production
 
 WORKDIR /app
 
 # Install runtime dependencies
-RUN apk add --no-cache wget libc6-compat openssl
+RUN apt-get update && apt-get install -y --no-install-recommends wget openssl && rm -rf /var/lib/apt/lists/*
 
 # Copy built NestJS app
 COPY --from=builder /app/apps/api/dist ./dist
@@ -74,11 +80,13 @@ COPY --from=builder /app/apps/api/prisma ./prisma
 COPY --from=builder /app/apps/api/package.json ./package.json
 
 # Copy workspace packages that are referenced by node_modules symlinks
+COPY --from=builder /app/packages/auth ./packages/auth
 COPY --from=builder /app/packages/db ./packages/db
 COPY --from=builder /app/packages/utils ./packages/utils
 COPY --from=builder /app/packages/integration-platform ./packages/integration-platform
 COPY --from=builder /app/packages/tsconfig ./packages/tsconfig
 COPY --from=builder /app/packages/email ./packages/email
+COPY --from=builder /app/packages/company ./packages/company
 
 # Copy production node_modules (includes symlinks to workspace packages above)
 COPY --from=builder /app/node_modules ./node_modules
@@ -87,12 +95,11 @@ COPY --from=builder /app/node_modules ./node_modules
 ENV NODE_ENV=production
 ENV PORT=3333
 
-# Install Prisma CLI and regenerate client in production stage
-RUN npm install -g prisma@6.13.0 && \
-    prisma generate --schema=./prisma/schema.prisma
+# Regenerate Prisma client for this runtime environment
+RUN npx prisma generate --schema=./prisma/schema.prisma
 
 # Create non-root user
-RUN addgroup --system nestjs && adduser --system --ingroup nestjs nestjs \
+RUN groupadd --system nestjs && useradd --system --gid nestjs nestjs \
   && chown -R nestjs:nestjs /app
 
 USER nestjs
@@ -103,5 +110,5 @@ EXPOSE 3333
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:3333/v1/health || exit 1
 
-# Start the application
-CMD ["node", "dist/src/main.js"]
+# Start the application with crash diagnostics
+CMD ["node", "--report-on-fatalerror", "--report-compact", "dist/src/main.js"]

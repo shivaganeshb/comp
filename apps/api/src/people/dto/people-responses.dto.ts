@@ -51,6 +51,12 @@ export class UserResponseDto {
     nullable: true,
   })
   lastLogin: Date | null;
+
+  @ApiProperty({
+    description: 'Whether the user is a platform admin (Comp AI team member)',
+    example: false,
+  })
+  isPlatformAdmin: boolean;
 }
 
 export class PeopleResponseDto {
@@ -90,6 +96,13 @@ export class PeopleResponseDto {
     example: Departments.it,
   })
   department: Departments;
+
+  @ApiProperty({
+    description: 'Job title for the member',
+    example: 'Software Engineer',
+    nullable: true,
+  })
+  jobTitle: string | null;
 
   @ApiProperty({
     description: 'Whether member is active',

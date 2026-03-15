@@ -4,28 +4,36 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
   ApiExtraModels,
   ApiBody,
-  ApiHeader,
   ApiOperation,
   ApiParam,
+  ApiQuery,
   ApiResponse,
   ApiSecurity,
   ApiTags,
 } from '@nestjs/swagger';
-import { TaskStatus } from '@db';
+import { TaskFrequency, TaskStatus } from '@db';
 import { AttachmentsService } from '../attachments/attachments.service';
 import { UploadAttachmentDto } from '../attachments/upload-attachment.dto';
 import { AuthContext, OrganizationId } from '../auth/auth-context.decorator';
 import { HybridAuthGuard } from '../auth/hybrid-auth.guard';
+import { PermissionGuard } from '../auth/permission.guard';
+import { RequirePermission } from '../auth/require-permission.decorator';
 import type { AuthContext as AuthContextType } from '../auth/types';
+import {
+  buildTaskAssignmentFilter,
+  hasTaskAccess,
+} from '../utils/assignment-filter';
 import {
   AttachmentResponseDto,
   TaskResponseDto,
@@ -37,24 +45,37 @@ import { TasksService } from './tasks.service';
 @Controller({ path: 'tasks', version: '1' })
 @UseGuards(HybridAuthGuard)
 @ApiSecurity('apikey')
-@ApiHeader({
-  name: 'X-Organization-Id',
-  description:
-    'Organization ID (required for session auth, optional for API key auth)',
-  required: false,
-})
 export class TasksController {
   constructor(
     private readonly tasksService: TasksService,
     private readonly attachmentsService: AttachmentsService,
   ) {}
 
+  private async resolveTaskMutationUserId(
+    authContext: AuthContextType,
+    organizationId: string,
+    missingUserMessage: string,
+  ): Promise<string> {
+    if (authContext.userId) {
+      return authContext.userId;
+    }
+
+    if (authContext.isApiKey) {
+      return this.tasksService.getApiKeyActorUserId(organizationId);
+    }
+
+    throw new BadRequestException(missingUserMessage);
+  }
+
   // ==================== TASKS ====================
 
   @Get()
+  @UseGuards(PermissionGuard)
+  @RequirePermission('task', 'read')
   @ApiOperation({
     summary: 'Get all tasks',
-    description: 'Retrieve all tasks for the authenticated organization',
+    description:
+      'Retrieve all tasks for the authenticated organization. Employees/contractors only see their assigned tasks.',
   })
   @ApiResponse({
     status: 200,
@@ -90,13 +111,114 @@ export class TasksController {
       },
     },
   })
+  @ApiQuery({ name: 'includeRelations', required: false, description: 'Include controls and automations with runs' })
   async getTasks(
     @OrganizationId() organizationId: string,
-  ): Promise<TaskResponseDto[]> {
-    return await this.tasksService.getTasks(organizationId);
+    @AuthContext() authContext: AuthContextType,
+    @Query('includeRelations') includeRelations?: string,
+  ) {
+    // Build assignment filter for restricted roles (employee/contractor)
+    const assignmentFilter = buildTaskAssignmentFilter(
+      authContext.memberId,
+      authContext.userRoles,
+      { isApiKey: authContext.isApiKey },
+    );
+
+    return await this.tasksService.getTasks(organizationId, assignmentFilter, {
+      includeRelations: includeRelations === 'true',
+    });
+  }
+
+  @Post()
+  @UseGuards(PermissionGuard)
+  @RequirePermission('task', 'create')
+  @ApiOperation({
+    summary: 'Create a task',
+    description: 'Create a new task for the organization',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', example: 'Implement access controls' },
+        description: {
+          type: 'string',
+          example: 'Set up role-based access controls for the platform',
+        },
+        assigneeId: {
+          type: 'string',
+          nullable: true,
+          example: 'mem_abc123',
+        },
+        frequency: {
+          type: 'string',
+          enum: ['daily', 'weekly', 'monthly', 'quarterly', 'yearly'],
+          nullable: true,
+          example: 'monthly',
+        },
+        department: {
+          type: 'string',
+          enum: ['none', 'admin', 'gov', 'hr', 'it', 'itsm', 'qms'],
+          nullable: true,
+          example: 'it',
+        },
+        controlIds: {
+          type: 'array',
+          items: { type: 'string' },
+          example: ['ctrl_abc123'],
+        },
+        taskTemplateId: {
+          type: 'string',
+          nullable: true,
+          example: 'tmpl_abc123',
+        },
+        vendorId: {
+          type: 'string',
+          nullable: true,
+          example: 'vnd_abc123',
+          description: 'Vendor ID to connect this task to',
+        },
+      },
+      required: ['title', 'description'],
+    },
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Task created successfully',
+    content: {
+      'application/json': {
+        schema: { $ref: '#/components/schemas/TaskResponseDto' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Invalid request body',
+  })
+  async createTask(
+    @OrganizationId() organizationId: string,
+    @Body()
+    body: {
+      title: string;
+      description: string;
+      assigneeId?: string | null;
+      frequency?: string | null;
+      department?: string | null;
+      controlIds?: string[];
+      taskTemplateId?: string | null;
+      vendorId?: string | null;
+    },
+  ): Promise<TaskResponseDto> {
+    if (!body.title || !body.description) {
+      throw new BadRequestException('title and description are required');
+    }
+
+    return await this.tasksService.createTask(organizationId, body);
   }
 
   @Patch('bulk')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('task', 'update')
   @ApiOperation({
     summary: 'Update status for multiple tasks',
     description: 'Bulk update the status of multiple tasks',
@@ -170,13 +292,11 @@ export class TasksController {
       }
     }
 
-    // Get userId from auth context
-    if (!authContext.userId) {
-      throw new BadRequestException(
-        'User ID is required. Bulk operations require authenticated user session.',
-      );
-    }
-    const userId = authContext.userId;
+    const userId = await this.resolveTaskMutationUserId(
+      authContext,
+      organizationId,
+      'User ID is required. Bulk operations require authenticated user session.',
+    );
 
     return await this.tasksService.updateTasksStatus(
       organizationId,
@@ -188,6 +308,8 @@ export class TasksController {
   }
 
   @Patch('bulk/assignee')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('task', 'update')
   @ApiOperation({
     summary: 'Update assignee for multiple tasks',
     description: 'Bulk update the assignee of multiple tasks',
@@ -240,13 +362,11 @@ export class TasksController {
       throw new BadRequestException('taskIds must be a non-empty array');
     }
 
-    // Get userId from auth context
-    if (!authContext.userId) {
-      throw new BadRequestException(
-        'User ID is required. Bulk operations require authenticated user session.',
-      );
-    }
-    const userId = authContext.userId;
+    const userId = await this.resolveTaskMutationUserId(
+      authContext,
+      organizationId,
+      'User ID is required. Bulk operations require authenticated user session.',
+    );
 
     return await this.tasksService.updateTasksAssignee(
       organizationId,
@@ -256,7 +376,164 @@ export class TasksController {
     );
   }
 
+  @Patch('reorder')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('task', 'update')
+  @ApiOperation({
+    summary: 'Reorder tasks',
+    description: 'Update the order and status for multiple tasks (drag & drop)',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        updates: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              order: { type: 'number' },
+              status: { type: 'string', enum: Object.values(TaskStatus) },
+            },
+            required: ['id', 'order', 'status'],
+          },
+        },
+      },
+      required: ['updates'],
+    },
+  })
+  @ApiResponse({ status: 200, description: 'Tasks reordered successfully' })
+  @ApiResponse({ status: 400, description: 'Invalid request body' })
+  async reorderTasks(
+    @OrganizationId() organizationId: string,
+    @Body() body: { updates: { id: string; order: number; status: TaskStatus }[] },
+  ): Promise<{ success: boolean }> {
+    if (!Array.isArray(body.updates) || body.updates.length === 0) {
+      throw new BadRequestException('updates must be a non-empty array');
+    }
+    await this.tasksService.reorderTasks(organizationId, body.updates);
+    return { success: true };
+  }
+
+  @Post('bulk/submit-for-review')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('task', 'update')
+  @ApiOperation({
+    summary: 'Bulk submit tasks for review',
+    description: 'Submit multiple tasks for review with a single approver',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        taskIds: {
+          type: 'array',
+          items: { type: 'string' },
+          example: ['tsk_abc123', 'tsk_def456'],
+        },
+        approverId: {
+          type: 'string',
+          example: 'mem_abc123',
+          description: 'Member ID of the approver',
+        },
+      },
+      required: ['taskIds', 'approverId'],
+    },
+  })
+  @ApiResponse({ status: 200, description: 'Tasks submitted for review' })
+  @ApiResponse({ status: 400, description: 'Invalid request' })
+  async bulkSubmitForReview(
+    @OrganizationId() organizationId: string,
+    @AuthContext() authContext: AuthContextType,
+    @Body() body: { taskIds: string[]; approverId: string },
+  ): Promise<{ submittedCount: number }> {
+    if (!authContext.userId) {
+      throw new BadRequestException(
+        'User ID is required. Bulk operations require authenticated user session.',
+      );
+    }
+    if (!Array.isArray(body.taskIds) || body.taskIds.length === 0) {
+      throw new BadRequestException('taskIds must be a non-empty array');
+    }
+    if (!body.approverId) {
+      throw new BadRequestException('approverId is required');
+    }
+    return await this.tasksService.bulkSubmitForReview(
+      organizationId,
+      body.taskIds,
+      authContext.userId,
+      body.approverId,
+    );
+  }
+
+  @Delete('bulk')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('task', 'delete')
+  @ApiOperation({
+    summary: 'Delete multiple tasks',
+    description: 'Bulk delete multiple tasks by their IDs',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        taskIds: {
+          type: 'array',
+          items: { type: 'string' },
+          example: ['tsk_abc123', 'tsk_def456'],
+        },
+      },
+      required: ['taskIds'],
+    },
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Tasks deleted successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        deletedCount: { type: 'number', example: 2 },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Invalid request body',
+  })
+  async deleteTasks(
+    @OrganizationId() organizationId: string,
+    @Body()
+    body: {
+      taskIds: string[];
+    },
+  ): Promise<{ deletedCount: number }> {
+    const { taskIds } = body;
+
+    if (!Array.isArray(taskIds) || taskIds.length === 0) {
+      throw new BadRequestException('taskIds must be a non-empty array');
+    }
+
+    return await this.tasksService.deleteTasks(organizationId, taskIds);
+  }
+
+  @Get('options')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('task', 'read')
+  @ApiOperation({ summary: 'Get page options for tasks overview' })
+  async getTaskOptions(
+    @OrganizationId() organizationId: string,
+    @AuthContext() authContext: AuthContextType,
+  ) {
+    return this.tasksService.getTaskPageOptions(
+      organizationId,
+      authContext.userId,
+    );
+  }
+
   @Get(':taskId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('task', 'read')
   @ApiOperation({
     summary: 'Get task by ID',
     description: 'Retrieve a specific task by its ID',
@@ -284,6 +561,10 @@ export class TasksController {
     },
   })
   @ApiResponse({
+    status: 403,
+    description: 'Forbidden - Not assigned to this task',
+  })
+  @ApiResponse({
     status: 404,
     description: 'Task not found',
     content: {
@@ -303,14 +584,63 @@ export class TasksController {
   async getTask(
     @OrganizationId() organizationId: string,
     @Param('taskId') taskId: string,
+    @AuthContext() authContext: AuthContextType,
   ): Promise<TaskResponseDto> {
-    return await this.tasksService.getTask(organizationId, taskId);
+    // Service returns full task object with assignee info
+    const task = await this.tasksService.getTask(organizationId, taskId);
+
+    // Check assignment access for restricted roles
+    // The task object from service includes assigneeId even though DTO doesn't declare it
+    const taskWithAssignee = task as TaskResponseDto & { assigneeId: string | null };
+    if (
+      !hasTaskAccess(taskWithAssignee, authContext.memberId, authContext.userRoles, { isApiKey: authContext.isApiKey })
+    ) {
+      throw new ForbiddenException('You do not have access to this task');
+    }
+
+    return task;
+  }
+
+  @Get(':taskId/activity')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('task', 'read')
+  @ApiOperation({
+    summary: 'Get task activity',
+    description:
+      'Retrieve audit log activity for a specific task with pagination',
+  })
+  @ApiParam({
+    name: 'taskId',
+    description: 'Unique task identifier',
+    example: 'tsk_abc123def456',
+  })
+  @ApiResponse({ status: 200, description: 'Activity retrieved successfully' })
+  @ApiResponse({ status: 400, description: 'Task not found' })
+  async getTaskActivity(
+    @OrganizationId() organizationId: string,
+    @Param('taskId') taskId: string,
+    @Query('skip') skip?: string,
+    @Query('take') take?: string,
+  ) {
+    const parsedSkip = skip ? Math.max(0, parseInt(skip, 10) || 0) : 0;
+    const parsedTake = take
+      ? Math.min(50, Math.max(1, parseInt(take, 10) || 10))
+      : 10;
+    return await this.tasksService.getTaskActivity(
+      organizationId,
+      taskId,
+      parsedSkip,
+      parsedTake,
+    );
   }
 
   @Patch(':taskId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('task', 'update')
   @ApiOperation({
     summary: 'Update a task',
-    description: 'Update an existing task (status, assignee, frequency, department, reviewDate)',
+    description:
+      'Update an existing task (title, description, status, assignee, approver, frequency, department, reviewDate)',
   })
   @ApiParam({
     name: 'taskId',
@@ -321,6 +651,16 @@ export class TasksController {
     schema: {
       type: 'object',
       properties: {
+        title: {
+          type: 'string',
+          example: 'Review access controls',
+          description: 'Task title',
+        },
+        description: {
+          type: 'string',
+          example: 'Review and update access control policies',
+          description: 'Task description',
+        },
         status: {
           type: 'string',
           enum: Object.values(TaskStatus),
@@ -331,6 +671,12 @@ export class TasksController {
           nullable: true,
           example: 'mem_abc123',
           description: 'Assignee member ID, or null to unassign',
+        },
+        approverId: {
+          type: 'string',
+          nullable: true,
+          example: 'mem_abc123',
+          description: 'Approver member ID, or null to unassign',
         },
         frequency: {
           type: 'string',
@@ -373,20 +719,21 @@ export class TasksController {
     @Param('taskId') taskId: string,
     @Body()
     body: {
+      title?: string;
+      description?: string;
       status?: TaskStatus;
       assigneeId?: string | null;
+      approverId?: string | null;
       frequency?: string;
       department?: string;
       reviewDate?: string;
     },
   ): Promise<TaskResponseDto> {
-    // Get userId from auth context
-    if (!authContext.userId) {
-      throw new BadRequestException(
-        'User ID is required. Task updates require authenticated user session.',
-      );
-    }
-    const userId = authContext.userId;
+    const userId = await this.resolveTaskMutationUserId(
+      authContext,
+      organizationId,
+      'User ID is required. Task updates require authenticated user session.',
+    );
 
     let parsedReviewDate: Date | null | undefined;
     if (body.reviewDate !== undefined) {
@@ -407,9 +754,12 @@ export class TasksController {
       organizationId,
       taskId,
       {
+        title: body.title,
+        description: body.description,
         status: body.status,
         assigneeId: body.assigneeId,
-        frequency: body.frequency,
+        approverId: body.approverId,
+        frequency: body.frequency as TaskFrequency | undefined,
         department: body.department,
         reviewDate: parsedReviewDate,
       },
@@ -417,9 +767,186 @@ export class TasksController {
     );
   }
 
+  @Post(':taskId/regenerate')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('task', 'update')
+  @ApiOperation({
+    summary: 'Regenerate task from template',
+    description:
+      'Update the task title, description, and automation status with the latest content from the framework template',
+  })
+  @ApiParam({
+    name: 'taskId',
+    description: 'Unique task identifier',
+    example: 'tsk_abc123def456',
+  })
+  @ApiResponse({ status: 200, description: 'Task regenerated successfully' })
+  @ApiResponse({ status: 400, description: 'Task has no associated template' })
+  @ApiResponse({ status: 404, description: 'Task not found' })
+  async regenerateTask(
+    @OrganizationId() organizationId: string,
+    @Param('taskId') taskId: string,
+  ) {
+    return this.tasksService.regenerateFromTemplate(organizationId, taskId);
+  }
+
+  @Delete(':taskId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('task', 'delete')
+  @ApiOperation({
+    summary: 'Delete a task',
+    description: 'Delete a single task by its ID',
+  })
+  @ApiParam({
+    name: 'taskId',
+    description: 'Unique task identifier',
+    example: 'tsk_abc123def456',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Task deleted successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean', example: true },
+        message: { type: 'string', example: 'Task deleted successfully' },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Task not found',
+  })
+  async deleteTask(
+    @OrganizationId() organizationId: string,
+    @Param('taskId') taskId: string,
+  ): Promise<{ success: boolean; message: string }> {
+    await this.tasksService.deleteTask(organizationId, taskId);
+    return { success: true, message: 'Task deleted successfully' };
+  }
+
+  // ==================== TASK APPROVAL ====================
+
+  @Post(':taskId/submit-for-review')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('task', 'update')
+  @ApiOperation({
+    summary: 'Submit task for review',
+    description: 'Move task status to in_review and assign an approver.',
+  })
+  @ApiParam({
+    name: 'taskId',
+    description: 'Unique task identifier',
+    example: 'tsk_abc123def456',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        approverId: {
+          type: 'string',
+          example: 'mem_abc123',
+          description: 'Member ID of the approver',
+        },
+      },
+      required: ['approverId'],
+    },
+  })
+  @ApiResponse({ status: 200, description: 'Task submitted for review' })
+  @ApiResponse({ status: 400, description: 'Invalid request' })
+  async submitForReview(
+    @OrganizationId() organizationId: string,
+    @AuthContext() authContext: AuthContextType,
+    @Param('taskId') taskId: string,
+    @Body() body: { approverId: string },
+  ): Promise<TaskResponseDto> {
+    if (!authContext.userId) {
+      throw new BadRequestException(
+        'User ID is required. This operation requires an authenticated user session.',
+      );
+    }
+    if (!body.approverId) {
+      throw new BadRequestException('approverId is required');
+    }
+    return await this.tasksService.submitForReview(
+      organizationId,
+      taskId,
+      authContext.userId,
+      body.approverId,
+    );
+  }
+
+  @Post(':taskId/approve')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('task', 'update')
+  @ApiOperation({
+    summary: 'Approve a task',
+    description:
+      'Approve a task that is in review. Only the assigned approver can approve. Moves status to done and creates an audit comment.',
+  })
+  @ApiParam({
+    name: 'taskId',
+    description: 'Unique task identifier',
+    example: 'tsk_abc123def456',
+  })
+  @ApiResponse({ status: 200, description: 'Task approved successfully' })
+  @ApiResponse({ status: 400, description: 'Task is not in review' })
+  @ApiResponse({ status: 403, description: 'Not the assigned approver' })
+  async approveTask(
+    @OrganizationId() organizationId: string,
+    @AuthContext() authContext: AuthContextType,
+    @Param('taskId') taskId: string,
+  ): Promise<TaskResponseDto> {
+    if (!authContext.userId) {
+      throw new BadRequestException(
+        'User ID is required. This operation requires an authenticated user session.',
+      );
+    }
+    return await this.tasksService.approveTask(
+      organizationId,
+      taskId,
+      authContext.userId,
+    );
+  }
+
+  @Post(':taskId/reject')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('task', 'update')
+  @ApiOperation({
+    summary: 'Reject a task review',
+    description:
+      'Reject a task that is in review. Only the assigned approver can reject. Reverts status to the previous status and creates an audit comment.',
+  })
+  @ApiParam({
+    name: 'taskId',
+    description: 'Unique task identifier',
+    example: 'tsk_abc123def456',
+  })
+  @ApiResponse({ status: 200, description: 'Task rejected successfully' })
+  @ApiResponse({ status: 400, description: 'Task is not in review' })
+  @ApiResponse({ status: 403, description: 'Not the assigned approver' })
+  async rejectTask(
+    @OrganizationId() organizationId: string,
+    @AuthContext() authContext: AuthContextType,
+    @Param('taskId') taskId: string,
+  ): Promise<TaskResponseDto> {
+    if (!authContext.userId) {
+      throw new BadRequestException(
+        'User ID is required. This operation requires an authenticated user session.',
+      );
+    }
+    return await this.tasksService.rejectTask(
+      organizationId,
+      taskId,
+      authContext.userId,
+    );
+  }
+
   // ==================== TASK ATTACHMENTS ====================
 
   @Get(':taskId/attachments')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('task', 'read')
   @ApiOperation({
     summary: 'Get task attachments',
     description: 'Retrieve all attachments for a specific task',
@@ -496,6 +1023,8 @@ export class TasksController {
   }
 
   @Post(':taskId/attachments')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('evidence', 'create')
   @ApiOperation({
     summary: 'Upload attachment to task',
     description: 'Upload a file attachment to a specific task',
@@ -610,6 +1139,8 @@ export class TasksController {
   }
 
   @Get(':taskId/attachments/:attachmentId/download')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('evidence', 'read')
   @ApiOperation({
     summary: 'Get attachment download URL',
     description: 'Generate a signed URL for downloading a task attachment',
@@ -692,6 +1223,8 @@ export class TasksController {
   }
 
   @Delete(':taskId/attachments/:attachmentId')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('evidence', 'delete')
   @ApiOperation({
     summary: 'Delete task attachment',
     description: 'Delete a specific attachment from a task',
@@ -764,10 +1297,18 @@ export class TasksController {
   ): Promise<{
     success: boolean;
     deletedAttachmentId: string;
+    fileName: string | null;
+    fileType: string | null;
     message: string;
   }> {
     // Verify task access
     await this.tasksService.verifyTaskAccess(organizationId, taskId);
+
+    // Fetch attachment details before deleting for audit trail
+    const attachment = await this.attachmentsService.getAttachmentById(
+      organizationId,
+      attachmentId,
+    );
 
     await this.attachmentsService.deleteAttachment(
       organizationId,
@@ -777,6 +1318,8 @@ export class TasksController {
     return {
       success: true,
       deletedAttachmentId: attachmentId,
+      fileName: attachment?.name ?? null,
+      fileType: attachment?.type ?? null,
       message: 'Attachment deleted successfully',
     };
   }

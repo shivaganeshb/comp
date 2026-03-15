@@ -13,9 +13,12 @@ export default defineConfig({
     exclude: ['node_modules', 'dist', '.next', 'e2e'],
     coverage: {
       reporter: ['text', 'json', 'html'],
+      include: ['src/app/(app)/*/security/penetration-tests/**/*.{ts,tsx}'],
       exclude: [
         'node_modules/',
         'src/test-utils/',
+        '.trigger/**',
+        '.next/**',
         '**/*.d.ts',
         '**/*.config.*',
         '**/mockData/*',
@@ -26,7 +29,6 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': resolve(__dirname, './src'),
-      '@/test-utils': resolve(__dirname, './src/test-utils'),
     },
   },
 });

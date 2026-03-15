@@ -1,14 +1,18 @@
 import {
   db,
+  Impact,
+  Likelihood,
   TaskItemPriority,
   TaskItemStatus,
   VendorStatus,
   type TaskItemEntityType,
 } from '@db';
+import { openai } from '@ai-sdk/openai';
 import type { Prisma } from '@prisma/client';
 import type { Task } from '@trigger.dev/sdk';
 import { logger, queue, schemaTask } from '@trigger.dev/sdk';
-import type { z } from 'zod';
+import { generateObject } from 'ai';
+import { z } from 'zod';
 
 import { resolveTaskCreatorAndAssignee } from './vendor-risk-assessment/assignee';
 import { VENDOR_RISK_ASSESSMENT_TASK_ID } from './vendor-risk-assessment/constants';
@@ -163,6 +167,247 @@ function parseRiskAssessmentJson(value: string): Prisma.InputJsonValue {
   }
 
   return parsed;
+}
+
+const riskLevelSchema = z
+  .object({
+    riskLevel: z.string().optional(),
+  })
+  .passthrough();
+
+function extractRiskLevel(value: Prisma.InputJsonValue): string | null {
+  const parsed = riskLevelSchema.safeParse(value);
+  if (!parsed.success) {
+    return null;
+  }
+  return parsed.data.riskLevel ?? null;
+}
+
+/**
+ * Risk level categories that map to database enums:
+ * - critical → Likelihood.very_likely / Impact.severe (highest)
+ * - high → Likelihood.likely / Impact.major
+ * - medium → Likelihood.possible / Impact.moderate
+ * - low → Likelihood.unlikely / Impact.minor
+ * - very_low → Likelihood.very_unlikely / Impact.insignificant (lowest)
+ */
+type NormalizedRiskLevel = 'critical' | 'high' | 'medium' | 'low' | 'very_low';
+
+const normalizedRiskLevelSchema = z.object({
+  riskLevel: z
+    .enum(['critical', 'high', 'medium', 'low', 'very_low'])
+    .describe(
+      'The normalized risk level - must be exactly one of these values',
+    ),
+});
+
+/**
+ * Use AI to normalize any risk level string to one of our exact enum values.
+ * Uses gpt-4o-mini (fast and cheap) with structured output to ensure valid values.
+ */
+async function normalizeRiskLevel(
+  rawRiskLevel: string | null | undefined,
+): Promise<NormalizedRiskLevel | null> {
+  if (!rawRiskLevel?.trim()) {
+    return null;
+  }
+
+  try {
+    const result = await generateObject({
+      model: openai('gpt-5.2'),
+      schema: normalizedRiskLevelSchema,
+      prompt: `Classify this vendor security risk level into exactly one of these 5 categories.
+
+Risk level from assessment: "${rawRiskLevel}"
+
+Categories (highest to lowest risk):
+- critical: Highest risk (severe, extreme, very high, critical concerns)
+- high: Significant risk (high, major issues)
+- medium: Moderate risk (medium, moderate, average)
+- low: Low risk (low, minimal, minor)
+- very_low: Minimal risk (very low, negligible, none)
+
+Rules:
+- Return exactly one of: critical, high, medium, low, very_low
+- If ambiguous (e.g., "Low to Moderate"), pick the HIGHER risk to be conservative`,
+    });
+
+    logger.info('Normalized risk level', {
+      rawRiskLevel,
+      normalizedRiskLevel: result.object.riskLevel,
+    });
+
+    return result.object.riskLevel;
+  } catch (error) {
+    logger.warn('Failed to normalize risk level, defaulting to medium', {
+      rawRiskLevel,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return 'medium';
+  }
+}
+
+function mapRiskLevelToLikelihood(
+  normalizedLevel: NormalizedRiskLevel | null,
+): Likelihood {
+  switch (normalizedLevel) {
+    case 'critical':
+      return Likelihood.very_likely;
+    case 'high':
+      return Likelihood.likely;
+    case 'medium':
+      return Likelihood.possible;
+    case 'low':
+      return Likelihood.unlikely;
+    case 'very_low':
+      return Likelihood.very_unlikely;
+    default:
+      // Default to medium (safer than lowest)
+      return Likelihood.possible;
+  }
+}
+
+function mapRiskLevelToImpact(
+  normalizedLevel: NormalizedRiskLevel | null,
+): Impact {
+  switch (normalizedLevel) {
+    case 'critical':
+      return Impact.severe;
+    case 'high':
+      return Impact.major;
+    case 'medium':
+      return Impact.moderate;
+    case 'low':
+      return Impact.minor;
+    case 'very_low':
+      return Impact.insignificant;
+    default:
+      // Default to medium (safer than lowest)
+      return Impact.moderate;
+  }
+}
+
+/**
+ * Valid compliance badge types for trust portal
+ */
+type ComplianceBadgeType =
+  | 'soc2'
+  | 'iso27001'
+  | 'iso42001'
+  | 'gdpr'
+  | 'hipaa'
+  | 'pci_dss'
+  | 'nen7510'
+  | 'iso9001';
+
+/**
+ * Map certification type strings from risk assessment to our badge types
+ */
+function mapCertificationToBadgeType(
+  certType: string,
+): ComplianceBadgeType | null {
+  const normalized = certType.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  // SOC 2 (Type I or Type II)
+  if (normalized.includes('soc2') || normalized.includes('soc 2')) {
+    return 'soc2';
+  }
+
+  // ISO 27001
+  if (normalized.includes('iso27001') || normalized.includes('27001')) {
+    return 'iso27001';
+  }
+
+  // ISO 42001 (AI Management)
+  if (normalized.includes('iso42001') || normalized.includes('42001')) {
+    return 'iso42001';
+  }
+
+  // ISO 9001 (Quality Management)
+  if (normalized.includes('iso9001') || normalized.includes('9001')) {
+    return 'iso9001';
+  }
+
+  // GDPR
+  if (normalized.includes('gdpr')) {
+    return 'gdpr';
+  }
+
+  // HIPAA
+  if (normalized.includes('hipaa')) {
+    return 'hipaa';
+  }
+
+  // PCI DSS
+  if (
+    normalized.includes('pcidss') ||
+    normalized.includes('pci') ||
+    normalized.includes('paymentcard')
+  ) {
+    return 'pci_dss';
+  }
+
+  // NEN 7510 (Dutch healthcare)
+  if (normalized.includes('nen7510') || normalized.includes('7510')) {
+    return 'nen7510';
+  }
+
+  return null;
+}
+
+/**
+ * Extract compliance badges from risk assessment data
+ */
+function extractComplianceBadges(
+  data: Prisma.InputJsonValue,
+): Prisma.InputJsonValue | null {
+  try {
+    const parsed = data as {
+      certifications?: Array<{ type: string; status: string }>;
+    };
+
+    if (!parsed?.certifications || !Array.isArray(parsed.certifications)) {
+      return null;
+    }
+
+    const badges: Array<{ type: ComplianceBadgeType; verified: boolean }> = [];
+    const seenTypes = new Set<ComplianceBadgeType>();
+
+    for (const cert of parsed.certifications) {
+      // Only include verified certifications
+      if (cert.status !== 'verified') {
+        continue;
+      }
+
+      const badgeType = mapCertificationToBadgeType(cert.type);
+      if (badgeType && !seenTypes.has(badgeType)) {
+        seenTypes.add(badgeType);
+        badges.push({ type: badgeType, verified: true });
+      }
+    }
+
+    return badges.length > 0 ? badges : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Generate logo URL using Google Favicon API
+ */
+function generateLogoUrl(website: string | null): string | null {
+  if (!website) return null;
+
+  try {
+    const urlWithProtocol = website.startsWith('http')
+      ? website
+      : `https://${website}`;
+    const parsed = new URL(urlWithProtocol);
+    const domain = parsed.hostname.replace(/^www\./, '');
+    return `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -615,11 +860,52 @@ export const vendorRiskAssessmentTask: Task<
       });
     }
 
+    const rawRiskLevel = extractRiskLevel(data);
+    const normalizedRiskLevel = await normalizeRiskLevel(rawRiskLevel);
+
+    // Log if risk level is missing (AI fallback already logs for ambiguous values)
+    if (!rawRiskLevel) {
+      logger.info('No risk level in assessment data, defaulting to medium', {
+        vendor: payload.vendorName,
+      });
+    } else if (normalizedRiskLevel) {
+      logger.info('Risk level normalized', {
+        vendor: payload.vendorName,
+        rawRiskLevel,
+        normalizedRiskLevel,
+      });
+    }
+
+    const inherentProbability = mapRiskLevelToLikelihood(normalizedRiskLevel);
+    const inherentImpact = mapRiskLevelToImpact(normalizedRiskLevel);
+    const residualProbability = mapRiskLevelToLikelihood(normalizedRiskLevel);
+    const residualImpact = mapRiskLevelToImpact(normalizedRiskLevel);
+
+    // Extract compliance badges from risk assessment certifications
+    const complianceBadges = extractComplianceBadges(data);
+    if (complianceBadges) {
+      logger.info('Extracted compliance badges from risk assessment', {
+        vendor: payload.vendorName,
+        badges: complianceBadges,
+      });
+    }
+
+    // Generate logo URL from website using Google Favicon API
+    const logoUrl = generateLogoUrl(vendor.website);
+
     // Mark org-specific vendor as assessed
     await db.vendor.update({
       where: { id: vendor.id },
       data: {
         status: VendorStatus.assessed,
+        inherentProbability,
+        inherentImpact,
+        residualProbability,
+        residualImpact,
+        // Only set complianceBadges if we found any, otherwise leave unchanged
+        ...(complianceBadges ? { complianceBadges } : {}),
+        // Only set logoUrl if we generated one, otherwise leave unchanged
+        ...(logoUrl ? { logoUrl } : {}),
       },
     });
 

@@ -18,6 +18,8 @@ model User {
   members            Member[]
   sessions           Session[]
   fleetPolicyResults FleetPolicyResult[]
+  evidenceSubmissions EvidenceSubmission[] @relation("EvidenceSubmitter")
+  evidenceReviews     EvidenceSubmission[] @relation("EvidenceReviewer")
 
   @@unique([email])
 }
@@ -78,10 +80,11 @@ model Verification {
 // JWT Plugin - Required by Better Auth JWT plugin
 // https://www.better-auth.com/docs/plugins/jwt
 model Jwks {
-  id         String   @id @default(dbgenerated("generate_prefixed_cuid('jwk'::text)"))
+  id         String    @id @default(dbgenerated("generate_prefixed_cuid('jwk'::text)"))
   publicKey  String
   privateKey String
-  createdAt  DateTime @default(now())
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime?
 
   @@map("jwks")
 }
@@ -96,8 +99,11 @@ model Member {
   createdAt      DateTime     @default(now())
 
   department                      Departments                       @default(none)
+  jobTitle                        String?
   isActive                        Boolean                           @default(true)
   deactivated                     Boolean                           @default(false)
+  externalUserId                  String?
+  externalUserSource              String?
   employeeTrainingVideoCompletion EmployeeTrainingVideoCompletion[]
   fleetDmLabelId                  Int?
 
@@ -116,6 +122,9 @@ model Member {
   updatedTaskItems       TaskItem[]           @relation("TaskItemUpdater")
   assignedTaskItems      TaskItem[]           @relation("TaskItemAssignee")
   createdFindings        Finding[]            @relation("FindingCreatedBy")
+  publishedPolicyVersions PolicyVersion[]     @relation("PolicyVersionPublisher")
+  approvedTasks           Task[]               @relation("TaskApprover")
+  devices                 Device[]
 }
 
 model Invitation {
@@ -139,6 +148,23 @@ enum Role {
   auditor
   employee
   contractor
+}
+
+// Custom roles for dynamic access control
+// This table stores organization-specific custom roles created via better-auth
+// See: https://www.better-auth.com/docs/plugins/organization#dynamic-access-control
+model OrganizationRole {
+  id             String       @id @default(dbgenerated("generate_prefixed_cuid('rol'::text)"))
+  name           String
+  permissions    String       @db.Text // Stored as serialized JSON string for better-auth compatibility
+  obligations    String       @default("{}") @db.Text // JSON: { compliance?: boolean }
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([organizationId, name])
+  @@map("organization_role")
 }
 
 enum PolicyStatus {

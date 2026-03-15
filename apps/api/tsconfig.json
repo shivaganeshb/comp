@@ -23,11 +23,15 @@
     "noFallthroughCasesInSwitch": false,
     "paths": {
       "@/*": ["./src/*"],
+<<<<<<< HEAD
       "@db": ["./prisma/index"],
       "@comp/email": ["../../packages/email/index.ts"],
       "@comp/email/*": ["../../packages/email/*"],
       "@trycompai/utils": ["../../packages/utils/src/index.ts"],
       "@trycompai/utils/*": ["../../packages/utils/src/*"]
+=======
+      "@db": ["./prisma/index"]
+>>>>>>> upstream/main
     },
     "jsx": "react-jsx"
   }

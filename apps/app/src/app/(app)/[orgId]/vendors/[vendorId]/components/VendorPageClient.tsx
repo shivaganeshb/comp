@@ -3,10 +3,11 @@
 import { Comments } from '@/components/comments/Comments';
 import { TaskItems } from '@/components/task-items/TaskItems';
 import { useVendor, type VendorResponse } from '@/hooks/use-vendors';
-import { CommentEntityType } from '@db';
 import type { Member, User, Vendor } from '@db';
+import { CommentEntityType } from '@db';
 import type { Prisma } from '@prisma/client';
 import { useMemo } from 'react';
+import { usePermissions } from '@/hooks/use-permissions';
 import { SecondaryFields } from './secondary-fields/secondary-fields';
 import { VendorHeader } from './VendorHeader';
 import { VendorInherentRiskChart } from './VendorInherentRiskChart';
@@ -47,8 +48,6 @@ interface VendorPageClientProps {
   initialVendor: VendorWithRiskAssessment;
   assignees: (Member & { user: User })[];
   isViewingTask: boolean;
-  isEditSheetOpen: boolean;
-  onEditSheetOpenChange: (open: boolean) => void;
 }
 
 /**
@@ -66,13 +65,10 @@ export function VendorPageClient({
   initialVendor,
   assignees,
   isViewingTask,
-  isEditSheetOpen,
-  onEditSheetOpenChange,
 }: VendorPageClientProps) {
   // Use SWR for real-time updates with polling
-  const { vendor: swrVendor } = useVendor(vendorId, {
-    organizationId: orgId,
-  });
+  const { vendor: swrVendor, mutate: refreshVendor } = useVendor(vendorId);
+  const { hasPermission } = usePermissions();
 
   // Normalize and memoize the vendor data
   // Use SWR data when available, fall back to initial data
@@ -85,26 +81,24 @@ export function VendorPageClient({
 
   return (
     <>
-      {!isViewingTask && (
-        <VendorHeader
-          vendor={vendor}
-          isEditSheetOpen={isEditSheetOpen}
-          onEditSheetOpenChange={onEditSheetOpenChange}
-        />
-      )}
+      {!isViewingTask && <VendorHeader vendor={vendor} />}
       <div className="flex flex-col gap-4">
         {!isViewingTask && (
           <>
-            <SecondaryFields vendor={vendor} assignees={assignees} />
+            <SecondaryFields vendor={vendor} assignees={assignees} onUpdate={refreshVendor} />
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
               <VendorInherentRiskChart vendor={vendor} />
               <VendorResidualRiskChart vendor={vendor} />
             </div>
           </>
         )}
-        <TaskItems entityId={vendorId} entityType="vendor" organizationId={orgId} />
+        <TaskItems entityId={vendorId} entityType="vendor" />
         {!isViewingTask && (
-          <Comments entityId={vendorId} entityType={CommentEntityType.vendor} organizationId={orgId} />
+          <Comments
+            entityId={vendorId}
+            entityType={CommentEntityType.vendor}
+            organizationId={orgId}
+          />
         )}
       </div>
     </>

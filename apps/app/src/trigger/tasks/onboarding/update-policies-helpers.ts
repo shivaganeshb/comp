@@ -195,6 +195,7 @@ export async function reconcileFormatWithTemplate(
   try {
     const { object } = await generateObject({
       model: openai('gpt-5-mini'),
+      output: 'no-schema',
       system: `You are an expert policy editor.
 Given an ORIGINAL policy TipTap JSON and a DRAFT TipTap JSON, produce a FINAL TipTap JSON that:
 - Preserves the ORIGINAL top-level section structure (order and presence of titles) and visual presentation of titles.
@@ -208,12 +209,12 @@ Given an ORIGINAL policy TipTap JSON and a DRAFT TipTap JSON, produce a FINAL Ti
 - OUTPUT FORMAT: Valid TipTap JSON with root {"type":"document","content":[...]}.`,
       prompt: `ORIGINAL (TipTap JSON):\n${JSON.stringify({ type: 'document', content: originalContent })}\n\nDRAFT (TipTap JSON):\n${JSON.stringify(draft)}\n\nReturn ONLY the FINAL TipTap JSON document with type "document" and a "content" array.
 Follow the structure rules above strictly.`,
-      schema: z.object({
-        type: z.literal('document'),
-        content: z.array(z.record(z.string(), z.unknown())),
-      }),
     });
-    return object;
+    const parsed = object as { type?: string; content?: unknown };
+    if (parsed?.type !== 'document' || !Array.isArray(parsed?.content)) {
+      throw new Error('AI response did not match expected TipTap document structure');
+    }
+    return { type: 'document' as const, content: parsed.content as Record<string, unknown>[] };
   } catch (error) {
     logger.error('AI reconcile format step failed; falling back to deterministic alignment', {
       error: error instanceof Error ? error.message : String(error),
@@ -372,6 +373,7 @@ export type UpdatePolicyParams = {
   policyId: string;
   contextHub: string;
   frameworks: FrameworkEditorFramework[];
+  memberId?: string;
 };
 
 export type PolicyUpdateResult = {
@@ -456,6 +458,7 @@ export async function generatePolicyContent(prompt: string): Promise<{
   try {
     const { object } = await generateObject({
       model: openai('gpt-5-mini'),
+      output: 'no-schema',
       system: `You are an expert at writing security policies. Generate content directly as TipTap JSON format.
 
 TipTap JSON structure:
@@ -468,20 +471,22 @@ TipTap JSON structure:
 - Bold: {"type": "bold"} in marks array
 - Italic: {"type": "italic"} in marks array
 
-IMPORTANT: Follow ALL formatting instructions in the prompt, implementing them as proper TipTap JSON structures.`,
+IMPORTANT: Follow ALL formatting instructions in the prompt, implementing them as proper TipTap JSON structures.
+Return a JSON object with exactly this shape: {"type": "document", "content": [array of TipTap nodes]}`,
       prompt: `Generate a SOC 2 compliant security policy as a complete TipTap JSON document.
 
 INSTRUCTIONS TO IMPLEMENT IN TIPTAP JSON:
 ${prompt.replace(/\\n/g, '\n')}
 
 Return the complete TipTap document following ALL the above requirements using proper TipTap JSON structure.`,
-      schema: z.object({
-        type: z.literal('document'),
-        content: z.array(z.record(z.string(), z.unknown())),
-      }),
     });
 
-    return object;
+    const parsed = object as { type?: string; content?: unknown };
+    if (parsed?.type !== 'document' || !Array.isArray(parsed?.content)) {
+      throw new Error('AI response did not match expected TipTap document structure');
+    }
+
+    return { type: 'document' as const, content: parsed.content as Record<string, unknown>[] };
   } catch (aiError) {
     logger.error(`Error generating AI content: ${aiError}`);
 
@@ -500,16 +505,94 @@ Return the complete TipTap document following ALL the above requirements using p
 }
 
 /**
- * Updates policy content in the database
+ * Updates policy content in the database with versioning support.
+ * Creates a new version 1 and sets it as the current (published) version.
+ * Deletes all existing versions first.
  */
 export async function updatePolicyInDatabase(
   policyId: string,
   content: Record<string, unknown>[],
+  memberId?: string,
 ): Promise<void> {
   try {
-    await db.policy.update({
+    // First, get the policy to check for existing versions and get their PDF URLs
+    const policy = await db.policy.findUnique({
       where: { id: policyId },
-      data: { content: content as JSONContent[] },
+      include: {
+        versions: {
+          select: { id: true, pdfUrl: true },
+        },
+      },
+    });
+
+    if (!policy) {
+      throw new Error(`Policy not found: ${policyId}`);
+    }
+
+    // Delete S3 files for existing versions if they have PDFs
+    // Note: We import S3 client dynamically to avoid issues with Trigger.dev runtime
+    const pdfUrlsToDelete = policy.versions
+      .map((v) => v.pdfUrl)
+      .filter((url): url is string => !!url);
+
+    if (pdfUrlsToDelete.length > 0) {
+      try {
+        // Dynamic import to work in Trigger.dev context
+        const { BUCKET_NAME, s3Client } = await import('@/app/s3');
+        const { DeleteObjectCommand } = await import('@aws-sdk/client-s3');
+
+        if (s3Client && BUCKET_NAME) {
+          await Promise.allSettled(
+            pdfUrlsToDelete.map((pdfUrl) =>
+              s3Client.send(
+                new DeleteObjectCommand({
+                  Bucket: BUCKET_NAME,
+                  Key: pdfUrl,
+                }),
+              ),
+            ),
+          );
+        }
+      } catch (s3Error) {
+        logger.error(`Error deleting S3 files during regeneration: ${s3Error}`);
+        // Continue with regeneration even if S3 cleanup fails
+      }
+    }
+
+    // Use transaction to ensure atomicity - if any step fails, all are rolled back
+    await db.$transaction(async (tx) => {
+      // Delete all existing versions
+      if (policy.versions.length > 0) {
+        await tx.policyVersion.deleteMany({
+          where: { policyId },
+        });
+      }
+
+      // Create new version 1
+      const newVersion = await tx.policyVersion.create({
+        data: {
+          policyId,
+          version: 1,
+          content: content as JSONContent[],
+          publishedById: memberId || null,
+          changelog: 'Regenerated policy content',
+        },
+      });
+
+      // Update policy with new content and set the new version as current
+      await tx.policy.update({
+        where: { id: policyId },
+        data: {
+          content: content as JSONContent[],
+          draftContent: content as JSONContent[], // Sync to prevent false "unpublished changes"
+          currentVersionId: newVersion.id,
+          pendingVersionId: null,
+          approverId: null, // Clear any pending approval
+          signedBy: [], // Clear signatures for new content
+          pdfUrl: null, // Clear policy-level PDF since we're regenerating
+          displayFormat: 'EDITOR', // Reset to editor format
+        },
+      });
     });
   } catch (dbError) {
     logger.error(`Failed to update policy in database: ${dbError}`);
@@ -521,7 +604,7 @@ export async function updatePolicyInDatabase(
  * Complete policy update workflow
  */
 export async function processPolicyUpdate(params: UpdatePolicyParams): Promise<PolicyUpdateResult> {
-  const { organizationId, policyId, contextHub, frameworks } = params;
+  const { organizationId, policyId, contextHub, frameworks, memberId } = params;
 
   // Fetch organization and policy data
   const { organization, policyTemplate } = await fetchOrganizationAndPolicy(
@@ -535,8 +618,8 @@ export async function processPolicyUpdate(params: UpdatePolicyParams): Promise<P
   // Generate new policy content
   const updatedContent = await generatePolicyContent(prompt);
 
-  // Update policy in database
-  await updatePolicyInDatabase(policyId, updatedContent.content);
+  // Update policy in database with versioning support
+  await updatePolicyInDatabase(policyId, updatedContent.content, memberId);
 
   return {
     policyId,

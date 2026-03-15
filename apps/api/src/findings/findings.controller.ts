@@ -20,12 +20,12 @@ import {
   ApiQuery,
   ApiResponse,
   ApiTags,
-  ApiHeader,
   ApiSecurity,
 } from '@nestjs/swagger';
 import { FindingStatus } from '@trycompai/db';
 import { HybridAuthGuard } from '../auth/hybrid-auth.guard';
-import { RequireRoles } from '../auth/role-validator.guard';
+import { PermissionGuard } from '../auth/permission.guard';
+import { RequirePermission } from '../auth/require-permission.decorator';
 import { AuthContext } from '../auth/auth-context.decorator';
 import type { AuthContext as AuthContextType } from '../auth/types';
 import { FindingsService } from './findings.service';
@@ -33,34 +33,44 @@ import { CreateFindingDto } from './dto/create-finding.dto';
 import { UpdateFindingDto } from './dto/update-finding.dto';
 import { ValidateFindingIdPipe } from './pipes/validate-finding-id.pipe';
 import { db } from '@trycompai/db';
+import { evidenceFormTypeSchema } from '@/evidence-forms/evidence-forms.definitions';
 
 @ApiTags('Findings')
 @Controller({ path: 'findings', version: '1' })
 @UseGuards(HybridAuthGuard)
 @ApiSecurity('apikey')
-@ApiHeader({
-  name: 'X-Organization-Id',
-  description:
-    'Organization ID (required for session auth, optional for API key auth)',
-  required: false,
-})
 export class FindingsController {
   constructor(private readonly findingsService: FindingsService) {}
 
   @Get()
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finding', 'read')
   @ApiOperation({
     summary: 'Get findings for a task',
     description: 'Retrieve all findings for a specific task',
   })
   @ApiQuery({
     name: 'taskId',
-    required: true,
+    required: false,
     description: 'Task ID to get findings for',
     example: 'tsk_abc123',
   })
+  @ApiQuery({
+    name: 'evidenceSubmissionId',
+    required: false,
+    description: 'Evidence submission ID to get findings for',
+    example: 'evs_abc123',
+  })
+  @ApiQuery({
+    name: 'evidenceFormType',
+    required: false,
+    description: 'Evidence form type to get findings for',
+    example: 'access-request',
+    enum: evidenceFormTypeSchema.options,
+  })
   @ApiResponse({
     status: 200,
-    description: 'List of findings for the task',
+    description: 'List of findings',
   })
   @ApiResponse({
     status: 401,
@@ -68,22 +78,60 @@ export class FindingsController {
   })
   @ApiResponse({
     status: 404,
-    description: 'Task not found',
+    description: 'Target not found',
   })
   async getFindingsByTask(
     @Query('taskId') taskId: string,
+    @Query('evidenceSubmissionId') evidenceSubmissionId: string,
+    @Query('evidenceFormType') evidenceFormType: string,
     @AuthContext() authContext: AuthContextType,
   ) {
-    if (!taskId) {
-      throw new BadRequestException('taskId query parameter is required');
+    const targets = [taskId, evidenceSubmissionId, evidenceFormType].filter(
+      Boolean,
+    );
+    if (targets.length === 0) {
+      throw new BadRequestException(
+        'One of taskId, evidenceSubmissionId, or evidenceFormType query parameter is required',
+      );
     }
-    return await this.findingsService.findByTaskId(
+    if (targets.length > 1) {
+      throw new BadRequestException(
+        'Provide only one target: taskId, evidenceSubmissionId, or evidenceFormType',
+      );
+    }
+
+    const parsedEvidenceFormType = evidenceFormType
+      ? evidenceFormTypeSchema.safeParse(evidenceFormType)
+      : null;
+    if (parsedEvidenceFormType && !parsedEvidenceFormType.success) {
+      throw new BadRequestException(
+        `Invalid evidenceFormType value. Must be one of: ${evidenceFormTypeSchema.options.join(', ')}`,
+      );
+    }
+
+    if (taskId) {
+      return await this.findingsService.findByTaskId(
+        authContext.organizationId,
+        taskId,
+      );
+    }
+
+    if (evidenceFormType && parsedEvidenceFormType?.success) {
+      return await this.findingsService.findByEvidenceFormType(
+        authContext.organizationId,
+        parsedEvidenceFormType.data,
+      );
+    }
+
+    return await this.findingsService.findByEvidenceSubmissionId(
       authContext.organizationId,
-      taskId,
+      evidenceSubmissionId,
     );
   }
 
   @Get('organization')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finding', 'read')
   @ApiOperation({
     summary: 'Get all findings for organization',
     description: 'Retrieve all findings for the organization',
@@ -128,6 +176,8 @@ export class FindingsController {
   }
 
   @Get(':id')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finding', 'read')
   @ApiOperation({
     summary: 'Get finding by ID',
     description: 'Retrieve a specific finding by its ID',
@@ -157,7 +207,8 @@ export class FindingsController {
   }
 
   @Post()
-  @UseGuards(RequireRoles('auditor', 'admin', 'owner'))
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finding', 'create')
   @ApiOperation({
     summary: 'Create a finding',
     description:
@@ -233,7 +284,8 @@ export class FindingsController {
   }
 
   @Patch(':id')
-  @UseGuards(RequireRoles('auditor', 'admin', 'owner'))
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finding', 'update')
   @ApiOperation({
     summary: 'Update a finding',
     description:
@@ -310,7 +362,8 @@ export class FindingsController {
   }
 
   @Delete(':id')
-  @UseGuards(RequireRoles('auditor', 'admin', 'owner'))
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finding', 'delete')
   @ApiOperation({
     summary: 'Delete a finding',
     description: 'Delete a finding (Auditor or Platform Admin only)',
@@ -379,6 +432,8 @@ export class FindingsController {
   }
 
   @Get(':id/history')
+  @UseGuards(PermissionGuard)
+  @RequirePermission('finding', 'read')
   @ApiOperation({
     summary: 'Get finding history',
     description: 'Retrieve the activity history for a specific finding',

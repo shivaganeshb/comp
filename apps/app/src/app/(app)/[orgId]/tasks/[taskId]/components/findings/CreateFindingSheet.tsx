@@ -1,13 +1,14 @@
 'use client';
 
 import {
-  useFindingActions,
-  useFindingTemplates,
+  DEFAULT_FINDING_TEMPLATES,
   FINDING_CATEGORY_LABELS,
   FINDING_TYPE_LABELS,
-  DEFAULT_FINDING_TEMPLATES,
+  useFindingActions,
+  useFindingTemplates,
   type FindingTemplate,
 } from '@/hooks/use-findings-api';
+import type { EvidenceFormType } from '@comp/company';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@comp/ui/form';
 import { useMediaQuery } from '@comp/ui/hooks';
 import { FindingType } from '@db';
@@ -36,6 +37,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { z } from 'zod';
+import { usePermissions } from '@/hooks/use-permissions';
 
 const createFindingSchema = z.object({
   type: z.nativeEnum(FindingType),
@@ -46,7 +48,9 @@ const createFindingSchema = z.object({
 });
 
 interface CreateFindingSheetProps {
-  taskId: string;
+  taskId?: string;
+  evidenceSubmissionId?: string;
+  evidenceFormType?: EvidenceFormType;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSuccess?: () => void;
@@ -54,12 +58,16 @@ interface CreateFindingSheetProps {
 
 export function CreateFindingSheet({
   taskId,
+  evidenceSubmissionId,
+  evidenceFormType,
   open,
   onOpenChange,
   onSuccess,
 }: CreateFindingSheetProps) {
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const { hasPermission } = usePermissions();
+  const canCreateFinding = hasPermission('finding', 'create');
 
   const { data: templatesData } = useFindingTemplates();
   const { createFinding } = useFindingActions();
@@ -78,7 +86,8 @@ export function CreateFindingSheet({
 
   // Get templates array from the API response, fall back to defaults if empty
   const apiTemplates: FindingTemplate[] = templatesData?.data || [];
-  const templates: FindingTemplate[] = apiTemplates.length > 0 ? apiTemplates : DEFAULT_FINDING_TEMPLATES;
+  const templates: FindingTemplate[] =
+    apiTemplates.length > 0 ? apiTemplates : DEFAULT_FINDING_TEMPLATES;
 
   // Find the selected template
   const selectedTemplate = useMemo(() => {
@@ -99,9 +108,11 @@ export function CreateFindingSheet({
       try {
         // Don't save templateId for built-in default templates (they don't exist in DB)
         const templateId = data.templateId?.startsWith('default_') ? undefined : data.templateId;
-        
+
         await createFinding({
           taskId,
+          evidenceSubmissionId,
+          evidenceFormType,
           type: data.type,
           templateId: templateId || undefined,
           content: data.content,
@@ -116,7 +127,7 @@ export function CreateFindingSheet({
         setIsSubmitting(false);
       }
     },
-    [createFinding, taskId, onOpenChange, form, onSuccess],
+    [createFinding, taskId, evidenceSubmissionId, evidenceFormType, onOpenChange, form, onSuccess],
   );
 
   const handleTemplateChange = useCallback(
@@ -133,16 +144,13 @@ export function CreateFindingSheet({
 
   // Group templates by category for the selector
   const groupedTemplates = useMemo((): Record<string, FindingTemplate[]> => {
-    return templates.reduce<Record<string, FindingTemplate[]>>(
-      (acc, template) => {
-        if (!acc[template.category]) {
-          acc[template.category] = [];
-        }
-        acc[template.category].push(template);
-        return acc;
-      },
-      {},
-    );
+    return templates.reduce<Record<string, FindingTemplate[]>>((acc, template) => {
+      if (!acc[template.category]) {
+        acc[template.category] = [];
+      }
+      acc[template.category].push(template);
+      return acc;
+    }, {});
   }, [templates]);
 
   const findingForm = (
@@ -155,9 +163,7 @@ export function CreateFindingSheet({
             <FormItem className="w-full">
               <FormLabel>Finding Type</FormLabel>
               <Select value={field.value} onValueChange={field.onChange}>
-                <SelectTrigger>
-                  {FINDING_TYPE_LABELS[field.value as FindingType]}
-                </SelectTrigger>
+                <SelectTrigger>{FINDING_TYPE_LABELS[field.value as FindingType]}</SelectTrigger>
                 <SelectContent>
                   {Object.entries(FINDING_TYPE_LABELS).map(([value, label]) => (
                     <SelectItem key={value} value={value}>
@@ -190,9 +196,7 @@ export function CreateFindingSheet({
                     <SelectItem value="none">No template - Custom finding</SelectItem>
                     {Object.entries(groupedTemplates).map(([category, templates]) => (
                       <SelectGroup key={category}>
-                        <SelectLabel>
-                          {FINDING_CATEGORY_LABELS[category] || category}
-                        </SelectLabel>
+                        <SelectLabel>{FINDING_CATEGORY_LABELS[category] || category}</SelectLabel>
                         {(templates as FindingTemplate[]).map((template) => (
                           <SelectItem key={template.id} value={template.id}>
                             {template.title}
@@ -215,11 +219,7 @@ export function CreateFindingSheet({
             <FormItem className="w-full">
               <FormLabel>Finding Details</FormLabel>
               <FormControl>
-                <Textarea
-                  {...field}
-                  placeholder="Describe the finding in detail..."
-                  rows={6}
-                />
+                <Textarea {...field} placeholder="Describe the finding in detail..." rows={6} />
               </FormControl>
               <FormMessage />
             </FormItem>
@@ -229,7 +229,7 @@ export function CreateFindingSheet({
         <div className="flex justify-end pt-4">
           <Button
             type="submit"
-            disabled={isSubmitting}
+            disabled={isSubmitting || !canCreateFinding}
             loading={isSubmitting}
             iconRight={<ArrowRight size={16} />}
           >

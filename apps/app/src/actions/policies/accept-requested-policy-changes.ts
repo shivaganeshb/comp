@@ -1,7 +1,7 @@
 'use server';
 
 import { sendNewPolicyEmail } from '@/trigger/tasks/email/new-policy-email';
-import { db, PolicyStatus } from '@db';
+import { db, PolicyStatus, type Prisma } from '@db';
 import { tasks } from '@trigger.dev/sdk';
 import { revalidatePath, revalidateTag } from 'next/cache';
 import { z } from 'zod';
@@ -28,7 +28,7 @@ export const acceptRequestedPolicyChangesAction = authActionClient
     const { id, approverId, comment } = parsedInput;
     const { user, session } = ctx;
 
-    if (!user.id || !session.activeOrganizationId) {
+    if (!user?.id || !session.activeOrganizationId) {
       throw new Error('Unauthorized');
     }
 
@@ -62,41 +62,60 @@ export const acceptRequestedPolicyChangesAction = authActionClient
       // Check if there were previous signers to determine notification type
       const isNewPolicy = policy.lastPublishedAt === null;
 
-      // Update policy status and clear signedBy field
+      // Build update data
+      const updateData: Prisma.PolicyUpdateInput = {
+        status: PolicyStatus.published,
+        approver: { disconnect: true }, // Clear the approver relation
+        signedBy: [], // Clear the signedBy field
+        lastPublishedAt: new Date(), // Update last published date
+        reviewDate: new Date(), // Update reviewDate to current date
+        pendingVersionId: null, // Clear pending version
+      };
+
+      // If there's a pending version, make it the current version
+      if (policy.pendingVersionId) {
+        const pendingVersion = await db.policyVersion.findUnique({
+          where: { id: policy.pendingVersionId },
+        });
+
+        if (!pendingVersion || pendingVersion.policyId !== policy.id) {
+          // Pending version is missing or invalid - cannot proceed with approval
+          return {
+            success: false,
+            error: 'The pending version no longer exists. Approval cannot be completed.',
+          };
+        }
+
+        updateData.currentVersion = { connect: { id: pendingVersion.id } };
+        updateData.content = pendingVersion.content as Prisma.InputJsonValue[];
+        updateData.draftContent = pendingVersion.content as Prisma.InputJsonValue[];
+      }
+
+      // Update policy status and apply version changes
       await db.policy.update({
         where: {
           id,
           organizationId: session.activeOrganizationId,
         },
-        data: {
-          status: PolicyStatus.published,
-          approverId: null,
-          signedBy: [], // Clear the signedBy field
-          lastPublishedAt: new Date(), // Update last published date
-          reviewDate: new Date(), // Update reviewDate to current date
-        },
+        data: updateData,
       });
 
-      // Get all employees in the organization to send notifications
-      const employees = await db.member.findMany({
+      // Get all active members — the downstream isUserUnsubscribed check
+      // handles role-based notification filtering via the org's notification matrix.
+      const members = await db.member.findMany({
         where: {
           organizationId: session.activeOrganizationId,
           isActive: true,
           deactivated: false,
+          user: { isPlatformAdmin: false },
         },
         include: {
           user: true,
         },
       });
 
-      // Filter to get only employees and contractors
-      const employeeMembers = employees.filter((member) => {
-        const roles = member.role.includes(',') ? member.role.split(',') : [member.role];
-        return roles.includes('employee') || roles.includes('contractor');
-      });
-
       // Prepare the events array for the API
-      const events = employeeMembers
+      const events = members
         .filter((employee) => employee.user.email)
         .map((employee) => {
           let notificationType: 'new' | 're-acceptance' | 'updated';
@@ -130,7 +149,7 @@ export const acceptRequestedPolicyChangesAction = authActionClient
       if (comment && comment.trim() !== '') {
         const member = await db.member.findFirst({
           where: {
-            userId: user.id,
+            userId: user!.id,
             organizationId: session.activeOrganizationId,
             deactivated: false,
           },

@@ -1,20 +1,29 @@
 'use client';
 
-import type { Control, Member, Policy, User } from '@db';
+import type { Control, Member, Policy, PolicyVersion, User } from '@db';
 import type { JSONContent } from '@tiptap/react';
 import { Stack, Tabs, TabsContent, TabsList, TabsTrigger } from '@trycompai/design-system';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useEffect, useMemo, useState } from 'react';
+import { usePermissions } from '@/hooks/use-permissions';
 import { Comments } from '../../../../../../components/comments/Comments';
-import type { AuditLogWithRelations } from '../data';
+import type { AuditLogWithRelations } from '@/hooks/use-audit-logs';
 import { PolicyContentManager } from '../editor/components/PolicyDetails';
+import { useAuditLogs } from '../hooks/useAuditLogs';
 import { usePolicy } from '../hooks/usePolicy';
+import { usePolicyVersions } from '../hooks/usePolicyVersions';
 import { PolicyAlerts } from './PolicyAlerts';
 import { PolicyArchiveSheet } from './PolicyArchiveSheet';
 import { PolicyControlMappings } from './PolicyControlMappings';
 import { PolicyDeleteDialog } from './PolicyDeleteDialog';
 import { PolicyOverviewSheet } from './PolicyOverviewSheet';
 import { PolicySettingsCard } from './PolicySettingsCard';
+import { PolicyVersionsTab } from './PolicyVersionsTab';
 import { RecentAuditLogs } from './RecentAuditLogs';
+
+type PolicyVersionWithPublisher = PolicyVersion & {
+  publishedBy: (Member & { user: User }) | null;
+};
 
 interface PolicyPageTabsProps {
   policy: (Policy & { approver: (Member & { user: User }) | null }) | null;
@@ -25,6 +34,7 @@ interface PolicyPageTabsProps {
   policyId: string;
   organizationId: string;
   logs: AuditLogWithRelations[];
+  versions: PolicyVersionWithPublisher[];
   showAiAssistant: boolean;
 }
 
@@ -37,11 +47,13 @@ export function PolicyPageTabs({
   policyId,
   organizationId,
   logs,
+  versions: initialVersions,
   showAiAssistant,
 }: PolicyPageTabsProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const { hasPermission } = usePermissions();
 
   // Use SWR for policy data with initial data from server
   const { policy, mutate } = usePolicy({
@@ -50,10 +62,78 @@ export function PolicyPageTabs({
     initialData: initialPolicy,
   });
 
+  // Use SWR for versions data with initial data from server
+  const { versions, mutate: mutateVersions } = usePolicyVersions({
+    policyId,
+    organizationId,
+    initialData: initialVersions,
+  });
+
+  // Use SWR for audit logs with initial data from server
+  const { logs: auditLogs, mutate: mutateAuditLogs } = useAuditLogs({
+    entityType: 'policy',
+    entityId: policyId,
+    initialData: logs,
+  });
+
+  // Combined mutate function to refresh policy, versions, and audit logs
+  const mutateAll = async () => {
+    await Promise.all([mutate(), mutateVersions(), mutateAuditLogs()]);
+  };
+
+  // Update a specific version's content in the cache (optimistic update)
+  const updateVersionContent = (versionId: string, newContent: JSONContent[]) => {
+    mutateVersions(
+      (currentVersions) => {
+        if (!currentVersions || !Array.isArray(currentVersions)) return currentVersions;
+        return currentVersions.map((v) =>
+          v.id === versionId ? { ...v, content: newContent } : v
+        );
+      },
+      false // Don't revalidate - this is an optimistic update
+    );
+  };
+
+  const hasDraftChanges = useMemo(() => {
+    if (!policy) return false;
+    const draftContent = policy.draftContent ?? [];
+    const publishedContent = policy.content ?? [];
+    return JSON.stringify(draftContent) !== JSON.stringify(publishedContent);
+  }, [policy]);
+
   // Derive isPendingApproval from current policy data
   const isPendingApproval = policy ? !!policy.approverId : initialIsPendingApproval;
 
   const isDeleteDialogOpen = searchParams.get('delete-policy') === 'true';
+  const tabFromUrl = searchParams.get('tab') || 'overview';
+  const versionIdFromUrl = searchParams.get('versionId');
+  const [activeTab, setActiveTab] = useState(tabFromUrl);
+
+  // Sync activeTab with URL param
+  useEffect(() => {
+    setActiveTab(tabFromUrl);
+  }, [tabFromUrl]);
+
+  const handleTabChange = (value: string) => {
+    setActiveTab(value);
+    // Refresh audit logs when switching to activity tab
+    if (value === 'activity') {
+      mutateAuditLogs();
+    }
+    const params = new URLSearchParams(searchParams.toString());
+    if (value === 'overview') {
+      params.delete('tab');
+      params.delete('versionId');
+    } else {
+      params.set('tab', value);
+      // Keep versionId if switching to content tab
+      if (value !== 'content') {
+        params.delete('versionId');
+      }
+    }
+    const query = params.toString();
+    router.push(query ? `${pathname}?${query}` : pathname);
+  };
 
   const handleCloseDeleteDialog = () => {
     const params = new URLSearchParams(searchParams.toString());
@@ -65,13 +145,14 @@ export function PolicyPageTabs({
   return (
     <Stack gap="md">
       {/* Alerts always visible above tabs */}
-      <PolicyAlerts policy={policy} isPendingApproval={isPendingApproval} onMutate={mutate} />
+      <PolicyAlerts policy={policy} isPendingApproval={isPendingApproval} onMutate={mutateAll} />
 
-      <Tabs defaultValue="overview">
+      <Tabs value={activeTab} onValueChange={handleTabChange}>
         <Stack gap="lg">
           <TabsList variant="underline">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="content">Content</TabsTrigger>
+            <TabsTrigger value="versions">Versions</TabsTrigger>
             <TabsTrigger value="activity">Activity</TabsTrigger>
             <TabsTrigger value="comments">Comments</TabsTrigger>
           </TabsList>
@@ -88,6 +169,7 @@ export function PolicyPageTabs({
                 mappedControls={mappedControls}
                 allControls={allControls}
                 isPendingApproval={isPendingApproval}
+                onMutate={mutateAll}
               />
             </Stack>
           </TabsContent>
@@ -96,20 +178,64 @@ export function PolicyPageTabs({
             <PolicyContentManager
               isPendingApproval={isPendingApproval}
               policyId={policyId}
-              policyContent={policy?.content ? (policy.content as JSONContent[]) : []}
+              policyContent={
+                // Priority: 1) Published version content, 2) legacy policy.content, 3) empty array
+                (() => {
+                  // Ensure versions is an array before using find
+                  const versionsArray = Array.isArray(versions) ? versions : [];
+                  // Find the published version content
+                  const currentVersion = versionsArray.find((v) => v.id === policy?.currentVersionId);
+                  if (currentVersion?.content) {
+                    const versionContent = currentVersion.content as JSONContent[];
+                    return Array.isArray(versionContent) ? versionContent : [versionContent];
+                  }
+                  // Fallback to legacy policy.content for backward compatibility
+                  if (policy?.content) {
+                    return policy.content as JSONContent[];
+                  }
+                  return [];
+                })()
+              }
               displayFormat={policy?.displayFormat}
-              pdfUrl={policy?.pdfUrl}
+              pdfUrl={
+                // Use version PDF if available, otherwise fallback to policy PDF
+                (Array.isArray(versions) ? versions : []).find((v) => v.id === policy?.currentVersionId)?.pdfUrl ?? policy?.pdfUrl
+              }
               aiAssistantEnabled={showAiAssistant}
-              onMutate={mutate}
+              hasUnpublishedChanges={hasDraftChanges}
+              currentVersionNumber={
+                (Array.isArray(versions) ? versions : []).find((v) => v.id === policy?.currentVersionId)?.version ?? null
+              }
+              currentVersionId={policy?.currentVersionId ?? null}
+              pendingVersionId={policy?.pendingVersionId ?? null}
+              versions={Array.isArray(versions) ? versions : []}
+              policyStatus={policy?.status}
+              lastPublishedAt={policy?.lastPublishedAt}
+              assignees={assignees}
+              initialVersionId={versionIdFromUrl || undefined}
+              onMutate={mutateAll}
+              onVersionContentChange={updateVersionContent}
             />
           </TabsContent>
 
+          <TabsContent value="versions">
+            {policy && (
+              <PolicyVersionsTab
+                policy={policy}
+                versions={Array.isArray(versions) ? versions : []}
+                assignees={assignees}
+                isPendingApproval={isPendingApproval}
+                onMutate={mutateAll}
+              />
+            )}
+          </TabsContent>
+
           <TabsContent value="activity">
-            <RecentAuditLogs logs={logs} />
+            <RecentAuditLogs logs={auditLogs} />
           </TabsContent>
 
           <TabsContent value="comments">
-            <Comments entityId={policyId} entityType="policy" organizationId={organizationId} />
+            <Comments entityId={policyId} entityType="policy" organizationId={organizationId} readOnly={!hasPermission('policy', 'update')} />
           </TabsContent>
         </Stack>
       </Tabs>
@@ -118,7 +244,7 @@ export function PolicyPageTabs({
       {policy && (
         <>
           <PolicyOverviewSheet policy={policy} />
-          <PolicyArchiveSheet policy={policy} onMutate={() => mutate()} />
+          <PolicyArchiveSheet policy={policy} onMutate={mutateAll} />
           <PolicyDeleteDialog
             isOpen={isDeleteDialogOpen}
             onClose={handleCloseDeleteDialog}

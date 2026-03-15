@@ -1,31 +1,47 @@
 'use client';
 
 import { useDebounce } from '@/hooks/useDebounce';
-import { api } from '@/lib/api-client';
-import { Button } from '@comp/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@comp/ui/card';
-import { Form, FormControl, FormField, FormItem, FormLabel } from '@comp/ui/form';
-import { Input } from '@comp/ui/input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@comp/ui/select';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@comp/ui/tooltip';
+import { usePermissions } from '@/hooks/use-permissions';
+import { useTrustPortalSettings } from '@/hooks/use-trust-portal-settings';
+import { Form } from '@comp/ui/form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Switch } from '@trycompai/design-system';
-import { Download, ExternalLink, Eye, FileCheck2, Upload } from 'lucide-react';
-import { useAction } from 'next-safe-action/hooks';
-import Link from 'next/link';
+import {
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Switch,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@trycompai/design-system';
+import { Download, Eye, FileCheck2, Upload } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { z } from 'zod';
-import { trustPortalSwitchAction } from '../actions/trust-portal-switch';
-import { updateTrustPortalFrameworks } from '../actions/update-trust-portal-frameworks';
 import {
   TrustPortalAdditionalDocumentsSection,
   type TrustPortalDocument,
 } from './TrustPortalAdditionalDocumentsSection';
-import { TrustPortalDomain } from './TrustPortalDomain';
+import { TrustPortalCustomLinks } from './TrustPortalCustomLinks';
 import { TrustPortalFaqBuilder } from './TrustPortalFaqBuilder';
-import { AllowedDomainsManager } from './AllowedDomainsManager';
+import { TrustPortalOverview } from './TrustPortalOverview';
+import { TrustPortalVendors } from './TrustPortalVendors';
+import { UpdateTrustFavicon } from './UpdateTrustFavicon';
+import { BrandSettings } from './BrandSettings';
+import type { FaqItem } from '../types/faq';
 import {
   GDPR,
   HIPAA,
@@ -95,6 +111,36 @@ interface ComplianceResourceUrlResponse {
   fileSize: number;
 }
 
+type TrustOverviewData = {
+  overviewTitle: string | null;
+  overviewContent: string | null;
+  showOverview: boolean;
+};
+
+type TrustCustomLink = {
+  id: string;
+  title: string;
+  description: string | null;
+  url: string;
+  order: number;
+  isActive: boolean;
+};
+
+type ComplianceBadge = {
+  type: 'soc2' | 'iso27001' | 'iso42001' | 'gdpr' | 'hipaa' | 'pci_dss' | 'nen7510' | 'iso9001';
+  verified: boolean;
+};
+
+type TrustVendor = {
+  id: string;
+  name: string;
+  description: string;
+  website: string | null;
+  showOnTrustPortal: boolean;
+  logoUrl: string | null;
+  complianceBadges: ComplianceBadge[] | null;
+};
+
 export function TrustPortalSwitch({
   enabled,
   slug,
@@ -122,9 +168,6 @@ export function TrustPortalSwitch({
   iso9001,
   iso9001Status,
   faqs,
-  isVercelDomain,
-  vercelVerification,
-  // File props - will be passed from page.tsx later
   iso27001FileName,
   iso42001FileName,
   gdprFileName,
@@ -135,7 +178,10 @@ export function TrustPortalSwitch({
   nen7510FileName,
   iso9001FileName,
   additionalDocuments,
-  allowedDomains,
+  overview,
+  customLinks,
+  vendors,
+  faviconUrl,
 }: {
   enabled: boolean;
   slug: string;
@@ -163,8 +209,6 @@ export function TrustPortalSwitch({
   iso9001: boolean;
   iso9001Status: 'started' | 'in_progress' | 'compliant';
   faqs: any[] | null;
-  isVercelDomain?: boolean;
-  vercelVerification?: string | null;
   iso27001FileName?: string | null;
   iso42001FileName?: string | null;
   gdprFileName?: string | null;
@@ -175,8 +219,20 @@ export function TrustPortalSwitch({
   nen7510FileName?: string | null;
   iso9001FileName?: string | null;
   additionalDocuments: TrustPortalDocument[];
-  allowedDomains: string[];
+  overview: TrustOverviewData;
+  customLinks: TrustCustomLink[];
+  vendors: TrustVendor[];
+  faviconUrl?: string | null;
 }) {
+  const { hasPermission } = usePermissions();
+  const canUpdate = hasPermission('trust', 'update');
+  const {
+    updateToggleSettings,
+    updateFrameworkSettings,
+    uploadComplianceResource,
+    getComplianceResourceUrl,
+  } = useTrustPortalSettings();
+
   const [certificateFiles, setCertificateFiles] = useState<Record<string, string | null>>({
     iso27001: iso27001FileName ?? null,
     iso42001: iso42001FileName ?? null,
@@ -231,26 +287,13 @@ export function TrustPortalSwitch({
     }
 
     const fileData = await convertFileToBase64(file);
-    const response = await api.post<ComplianceResourceResponse>(
-      '/v1/trust-portal/compliance-resources/upload',
-      {
-        organizationId: orgId,
-        framework: apiFramework,
-        fileName: file.name,
-        fileType: file.type || 'application/pdf',
-        fileData,
-      },
+    const payload = await uploadComplianceResource(
       orgId,
+      apiFramework,
+      file.name,
+      file.type || 'application/pdf',
+      fileData,
     );
-
-    if (response.error) {
-      throw new Error(response.error);
-    }
-
-    const payload = response.data;
-    if (!payload) {
-      throw new Error('Unexpected API response');
-    }
 
     setCertificateFiles((prev) => ({
       ...prev,
@@ -267,38 +310,10 @@ export function TrustPortalSwitch({
       throw new Error('No certificate uploaded yet');
     }
 
-    const response = await api.post<ComplianceResourceUrlResponse>(
-      '/v1/trust-portal/compliance-resources/signed-url',
-      {
-        organizationId: orgId,
-        framework: apiFramework,
-      },
-      orgId,
-    );
-
-    if (response.error) {
-      throw new Error(response.error);
-    }
-
-    const payload = response.data;
-    if (!payload?.signedUrl) {
-      throw new Error('Preview link unavailable');
-    }
-
+    const payload = await getComplianceResourceUrl(orgId, apiFramework);
     window.open(payload.signedUrl, '_blank', 'noopener,noreferrer');
   };
-  const trustPortalSwitch = useAction(trustPortalSwitchAction, {
-    onSuccess: () => {
-      toast.success('Trust portal status updated');
-    },
-    onError: () => {
-      toast.error('Failed to update trust portal status');
-    },
-  });
-
-  // Use ref to store latest trustPortalSwitch to avoid stale closures
-  const trustPortalSwitchRef = useRef(trustPortalSwitch);
-  trustPortalSwitchRef.current = trustPortalSwitch;
+  const [isToggling, setIsToggling] = useState(false);
 
   const form = useForm<z.infer<typeof trustPortalSwitchSchema>>({
     resolver: zodResolver(trustPortalSwitchSchema),
@@ -329,9 +344,21 @@ export function TrustPortalSwitch({
 
   const onSubmit = useCallback(
     async (data: TrustPortalSwitchActionInput) => {
-      await trustPortalSwitchRef.current.execute(data);
+      setIsToggling(true);
+      try {
+        await updateToggleSettings({
+          enabled: data.enabled,
+          contactEmail: data.contactEmail,
+          primaryColor: data.primaryColor,
+        });
+        toast.success('Trust portal status updated');
+      } catch {
+        toast.error('Failed to update trust portal status');
+      } finally {
+        setIsToggling(false);
+      }
     },
-    [], // Safe to use empty array because we use ref
+    [updateToggleSettings],
   );
 
   const portalUrl = domainVerified ? `https://${domain}` : `https://trust.inc/${slug}`;
@@ -436,490 +463,378 @@ export function TrustPortalSwitch({
 
   return (
     <Form {...form}>
-      <form className="space-y-4">
-        <div className="space-y-6">
-          <div className="flex items-center justify-between pb-4">
-            <div className="space-y-1">
-              <h2 className="text-lg font-medium flex items-center gap-2">
-                <Link
-                  href={portalUrl}
-                  target="_blank"
-                  className="text-primary hover:underline flex items-center gap-2"
-                >
-                  Trust Portal
-                  <ExternalLink className="h-4 w-4" />
-                </Link>
-              </h2>
-              <p className="text-muted-foreground text-sm">
-                Create a public trust portal for your organization.
-              </p>
-            </div>
-            <FormField
-              control={form.control}
-              name="enabled"
-              render={({ field }) => (
-                <FormItem className="flex items-center space-y-0 space-x-2">
-                  <FormControl>
-                    <Switch
-                      checked={field.value}
-                      onCheckedChange={handleEnabledChange}
-                      disabled={trustPortalSwitch.status === 'executing'}
-                    />
-                  </FormControl>
-                </FormItem>
-              )}
-            />
-          </div>
-          <div className="space-y-6">
-            {form.watch('enabled') && (
-              <div className="pt-2">
-                <h3 className="mb-4 text-sm font-medium">Trust Portal Settings</h3>
-                <div className="grid grid-cols-1 gap-x-4 gap-y-4 lg:grid-cols-2">
-                  <FormField
-                    control={form.control}
-                    name="primaryColor"
-                    render={({ field }) => (
-                      <FormItem className="w-full">
-                        <FormLabel>Brand Color</FormLabel>
-                        <FormControl>
-                          <div className="relative">
-                            <div className="flex items-center gap-2">
-                              {/* Color Swatch */}
-                              <div className="relative">
-                                <input
-                                  {...field}
-                                  value={primaryColorValue ?? '#000000'}
-                                  onChange={(e) => {
-                                    field.onChange(e);
-                                    setPrimaryColorValue(e.target.value);
-                                  }}
-                                  onBlur={handlePrimaryColorBlur}
-                                  type="color"
-                                  className="sr-only"
-                                  id="color-picker"
-                                />
-                                <label
-                                  htmlFor="color-picker"
-                                  className="flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg border-2 border-border shadow-sm transition-all hover:scale-105 hover:shadow-md"
-                                  style={{ backgroundColor: primaryColorValue || '#000000' }}
-                                >
-                                  <span className="sr-only">Pick a color</span>
-                                </label>
-                              </div>
-                              {/* Hex Input */}
-                              <div className="flex-1">
-                                <Input
-                                  value={primaryColorValue?.toUpperCase() || '#000000'}
-                                  onChange={(e) => {
-                                    let value = e.target.value;
-                                    if (!value.startsWith('#')) {
-                                      value = '#' + value;
-                                    }
-                                    field.onChange(value);
-                                    setPrimaryColorValue(value);
-                                  }}
-                                  onBlur={handlePrimaryColorBlur}
-                                  placeholder="#000000"
-                                  className="font-mono"
-                                  maxLength={7}
-                                />
-                              </div>
-                            </div>
-                          </div>
-                        </FormControl>
-                      </FormItem>
-                    )}
-                  />
-                  <FormField
-                    control={form.control}
-                    name="contactEmail"
-                    render={({ field }) => (
-                      <FormItem className="w-full">
-                        <FormLabel>Contact Email</FormLabel>
-                        <FormControl>
-                          <Input
-                            {...field}
-                            value={contactEmailValue}
-                            onChange={(e) => {
-                              field.onChange(e);
-                              setContactEmailValue(e.target.value);
-                            }}
-                            onBlur={handleContactEmailBlur}
-                            placeholder="contact@example.com"
-                            autoComplete="off"
-                            autoCapitalize="none"
-                            autoCorrect="off"
-                            spellCheck="false"
-                          />
-                        </FormControl>
-                      </FormItem>
-                    )}
-                  />
-                </div>
-                <div className="w-full lg:col-span-2 mt-1.5">
-                  <p className="text-xs text-muted-foreground mb-4">
-                    Used for branding across your trust portal
-                  </p>
-                </div>
+      <form>
+        <Tabs defaultValue="frameworks">
+          <TabsList variant="underline">
+            <TabsTrigger value="frameworks">Frameworks</TabsTrigger>
+            <TabsTrigger value="content">Mission</TabsTrigger>
+            <TabsTrigger value="branding">Branding</TabsTrigger>
+            <TabsTrigger value="vendors">Vendors</TabsTrigger>
+            <TabsTrigger value="links">Links</TabsTrigger>
+            <TabsTrigger value="faq">FAQ</TabsTrigger>
+            <TabsTrigger value="documents">Documents</TabsTrigger>
+          </TabsList>
+
+          {/* Compliance Frameworks Tab */}
+          <TabsContent value="frameworks">
+            <div className="pt-6">
+              <div className="mb-4">
+                <h3 className="text-lg font-medium">Compliance Frameworks</h3>
+                <p className="text-muted-foreground text-sm">
+                  Share the frameworks your organization is compliant with or working towards.
+                </p>
               </div>
-            )}
-            {form.watch('enabled') && (
-              <div className="pt-6">
-                {/* FAQ Section */}
-                <TrustPortalFaqBuilder initialFaqs={faqs} orgId={orgId} />
-              </div>
-            )}
-            {form.watch('enabled') && (
-              <div className="pt-6">
-                {/* NDA Bypass - Allowed Domains Section */}
-                <AllowedDomainsManager
-                  initialDomains={allowedDomains}
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-3">
+                {/* ISO 27001 */}
+                <ComplianceFramework
+                  title="ISO 27001"
+                  description="An international standard for managing information security systems."
+                  isEnabled={iso27001}
+                  status={iso27001Status}
+                  onStatusChange={async (value) => {
+                    try {
+                      await updateFrameworkSettings({
+                        iso27001Status: value as 'started' | 'in_progress' | 'compliant',
+                      });
+                      toast.success('ISO 27001 status updated');
+                    } catch (error) {
+                      toast.error('Failed to update ISO 27001 status');
+                    }
+                  }}
+                  onToggle={async (checked) => {
+                    try {
+                      await updateFrameworkSettings({
+                        iso27001: checked,
+                      });
+                      toast.success('ISO 27001 status updated');
+                    } catch (error) {
+                      toast.error('Failed to update ISO 27001 status');
+                    }
+                  }}
+                  fileName={certificateFiles.iso27001}
+                  onFileUpload={handleFileUpload}
+                  onFilePreview={handleFilePreview}
+                  frameworkKey="iso27001"
                   orgId={orgId}
+                  disabled={!canUpdate}
+                />
+                {/* ISO 42001 */}
+                <ComplianceFramework
+                  title="ISO 42001"
+                  description="An international standard for an Artificial Intelligence Management System."
+                  isEnabled={iso42001}
+                  status={iso42001Status}
+                  onStatusChange={async (value) => {
+                    try {
+                      await updateFrameworkSettings({
+                        iso42001Status: value as 'started' | 'in_progress' | 'compliant',
+                      });
+                      toast.success('ISO 42001 status updated');
+                    } catch (error) {
+                      toast.error('Failed to update ISO 42001 status');
+                    }
+                  }}
+                  onToggle={async (checked) => {
+                    try {
+                      await updateFrameworkSettings({
+                        iso42001: checked,
+                      });
+                      toast.success('ISO 42001 status updated');
+                    } catch (error) {
+                      toast.error('Failed to update ISO 42001 status');
+                    }
+                  }}
+                  fileName={certificateFiles.iso42001}
+                  onFileUpload={handleFileUpload}
+                  onFilePreview={handleFilePreview}
+                  frameworkKey="iso42001"
+                  orgId={orgId}
+                  disabled={!canUpdate}
+                />
+                {/* GDPR */}
+                <ComplianceFramework
+                  title="GDPR"
+                  description="A European regulation that governs personal data protection and user privacy."
+                  isEnabled={gdpr}
+                  status={gdprStatus}
+                  onStatusChange={async (value) => {
+                    try {
+                      await updateFrameworkSettings({
+                        gdprStatus: value as 'started' | 'in_progress' | 'compliant',
+                      });
+                      toast.success('GDPR status updated');
+                    } catch (error) {
+                      toast.error('Failed to update GDPR status');
+                    }
+                  }}
+                  onToggle={async (checked) => {
+                    try {
+                      await updateFrameworkSettings({
+                        gdpr: checked,
+                      });
+                      toast.success('GDPR status updated');
+                    } catch (error) {
+                      toast.error('Failed to update GDPR status');
+                    }
+                  }}
+                  fileName={certificateFiles.gdpr}
+                  onFileUpload={handleFileUpload}
+                  onFilePreview={handleFilePreview}
+                  frameworkKey="gdpr"
+                  orgId={orgId}
+                  disabled={!canUpdate}
+                />
+                {/* HIPAA */}
+                <ComplianceFramework
+                  title="HIPAA"
+                  description="A US regulation that protects sensitive patient health information and medical data."
+                  isEnabled={hipaa}
+                  status={hipaaStatus}
+                  onStatusChange={async (value) => {
+                    try {
+                      await updateFrameworkSettings({
+                        hipaaStatus: value as 'started' | 'in_progress' | 'compliant',
+                      });
+                      toast.success('HIPAA status updated');
+                    } catch (error) {
+                      toast.error('Failed to update HIPAA status');
+                    }
+                  }}
+                  onToggle={async (checked) => {
+                    try {
+                      await updateFrameworkSettings({
+                        hipaa: checked,
+                      });
+                      toast.success('HIPAA status updated');
+                    } catch (error) {
+                      toast.error('Failed to update HIPAA status');
+                    }
+                  }}
+                  fileName={certificateFiles.hipaa}
+                  onFileUpload={handleFileUpload}
+                  onFilePreview={handleFilePreview}
+                  frameworkKey="hipaa"
+                  orgId={orgId}
+                  disabled={!canUpdate}
+                />
+                {/* SOC 2 Type 1*/}
+                <ComplianceFramework
+                  title="SOC 2 Type 1"
+                  description="A compliance framework focused on data security, availability, and confidentiality."
+                  isEnabled={soc2type1}
+                  status={soc2type1Status}
+                  onStatusChange={async (value) => {
+                    try {
+                      await updateFrameworkSettings({
+                        soc2type1Status: value as 'started' | 'in_progress' | 'compliant',
+                      });
+                      toast.success('SOC 2 Type 1 status updated');
+                    } catch (error) {
+                      toast.error('Failed to update SOC 2 Type 1 status');
+                    }
+                  }}
+                  onToggle={async (checked) => {
+                    try {
+                      await updateFrameworkSettings({
+                        soc2type1: checked,
+                      });
+                      toast.success('SOC 2 Type 1 status updated');
+                    } catch (error) {
+                      toast.error('Failed to update SOC 2 Type 1 status');
+                    }
+                  }}
+                  fileName={certificateFiles.soc2type1}
+                  onFileUpload={handleFileUpload}
+                  onFilePreview={handleFilePreview}
+                  frameworkKey="soc2type1"
+                  orgId={orgId}
+                  disabled={!canUpdate}
+                />
+                {/* SOC 2 Type 2*/}
+                <ComplianceFramework
+                  title="SOC 2 Type 2"
+                  description="A compliance framework focused on data security, availability, and confidentiality."
+                  isEnabled={soc2type2}
+                  status={soc2type2Status}
+                  onStatusChange={async (value) => {
+                    try {
+                      await updateFrameworkSettings({
+                        soc2type2Status: value as 'started' | 'in_progress' | 'compliant',
+                      });
+                      toast.success('SOC 2 Type 2 status updated');
+                    } catch (error) {
+                      toast.error('Failed to update SOC 2 Type 2 status');
+                    }
+                  }}
+                  onToggle={async (checked) => {
+                    try {
+                      await updateFrameworkSettings({
+                        soc2type2: checked,
+                      });
+                      toast.success('SOC 2 Type 2 status updated');
+                    } catch (error) {
+                      toast.error('Failed to update SOC 2 Type 2 status');
+                    }
+                  }}
+                  fileName={certificateFiles.soc2type2}
+                  onFileUpload={handleFileUpload}
+                  onFilePreview={handleFilePreview}
+                  frameworkKey="soc2type2"
+                  orgId={orgId}
+                  disabled={!canUpdate}
+                />
+                {/* PCI DSS */}
+                <ComplianceFramework
+                  title="PCI DSS"
+                  description="A compliance framework focused on data security, availability, and confidentiality."
+                  isEnabled={pcidss}
+                  status={pcidssStatus}
+                  onStatusChange={async (value) => {
+                    try {
+                      await updateFrameworkSettings({
+                        pcidssStatus: value as 'started' | 'in_progress' | 'compliant',
+                      });
+                      toast.success('PCI DSS status updated');
+                    } catch (error) {
+                      toast.error('Failed to update PCI DSS status');
+                    }
+                  }}
+                  onToggle={async (checked) => {
+                    try {
+                      await updateFrameworkSettings({
+                        pcidss: checked,
+                      });
+                      toast.success('PCI DSS status updated');
+                    } catch (error) {
+                      toast.error('Failed to update PCI DSS status');
+                    }
+                  }}
+                  fileName={certificateFiles.pcidss}
+                  onFileUpload={handleFileUpload}
+                  onFilePreview={handleFilePreview}
+                  frameworkKey="pcidss"
+                  orgId={orgId}
+                  disabled={!canUpdate}
+                />
+                {/* NEN 7510 */}
+                <ComplianceFramework
+                  title="NEN 7510"
+                  description="A Dutch standard for managing information security systems."
+                  isEnabled={nen7510}
+                  status={nen7510Status}
+                  onStatusChange={async (value) => {
+                    try {
+                      await updateFrameworkSettings({
+                        nen7510Status: value as 'started' | 'in_progress' | 'compliant',
+                      });
+                      toast.success('NEN 7510 status updated');
+                    } catch (error) {
+                      toast.error('Failed to update NEN 7510 status');
+                    }
+                  }}
+                  onToggle={async (checked) => {
+                    try {
+                      await updateFrameworkSettings({
+                        nen7510: checked,
+                      });
+                      toast.success('NEN 7510 status updated');
+                    } catch (error) {
+                      toast.error('Failed to update NEN 7510 status');
+                    }
+                  }}
+                  fileName={certificateFiles.nen7510}
+                  onFileUpload={handleFileUpload}
+                  onFilePreview={handleFilePreview}
+                  frameworkKey="nen7510"
+                  orgId={orgId}
+                  disabled={!canUpdate}
+                />
+                {/* ISO 9001 */}
+                <ComplianceFramework
+                  title="ISO 9001"
+                  description="An international standard for quality management systems."
+                  isEnabled={iso9001}
+                  status={iso9001Status}
+                  onStatusChange={async (value) => {
+                    try {
+                      await updateFrameworkSettings({
+                        iso9001Status: value as 'started' | 'in_progress' | 'compliant',
+                      });
+                      toast.success('ISO 9001 status updated');
+                    } catch (error) {
+                      toast.error('Failed to update ISO 9001 status');
+                    }
+                  }}
+                  onToggle={async (checked) => {
+                    try {
+                      await updateFrameworkSettings({
+                        iso9001: checked,
+                      });
+                      toast.success('ISO 9001 status updated');
+                    } catch (error) {
+                      toast.error('Failed to update ISO 9001 status');
+                    }
+                  }}
+                  fileName={certificateFiles.iso9001}
+                  onFileUpload={handleFileUpload}
+                  onFilePreview={handleFilePreview}
+                  frameworkKey="iso9001"
+                  orgId={orgId}
+                  disabled={!canUpdate}
                 />
               </div>
-            )}
-            {form.watch('enabled') && (
-              <div className="pt-6">
-                {/* Compliance Frameworks Section */}
-                <div>
-                  <h3 className="mb-2 text-sm font-medium">Compliance Frameworks</h3>
-                  <p className="text-muted-foreground mb-4 text-sm">
-                    Share the frameworks your organization is compliant with or working towards.
-                  </p>
-                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-3">
-                    {/* ISO 27001 */}
-                    <ComplianceFramework
-                      title="ISO 27001"
-                      description="An international standard for managing information security systems."
-                      isEnabled={iso27001}
-                      status={iso27001Status}
-                      onStatusChange={async (value) => {
-                        try {
-                          await updateTrustPortalFrameworks({
-                            orgId,
-                            iso27001Status: value as 'started' | 'in_progress' | 'compliant',
-                          });
-                          toast.success('ISO 27001 status updated');
-                        } catch (error) {
-                          toast.error('Failed to update ISO 27001 status');
-                        }
-                      }}
-                      onToggle={async (checked) => {
-                        try {
-                          await updateTrustPortalFrameworks({
-                            orgId,
-                            iso27001: checked,
-                          });
-                          toast.success('ISO 27001 status updated');
-                        } catch (error) {
-                          toast.error('Failed to update ISO 27001 status');
-                        }
-                      }}
-                      fileName={certificateFiles.iso27001}
-                      onFileUpload={handleFileUpload}
-                      onFilePreview={handleFilePreview}
-                      frameworkKey="iso27001"
-                      orgId={orgId}
-                    />
-                    {/* ISO 42001 */}
-                    <ComplianceFramework
-                      title="ISO 42001"
-                      description="An international standard for an Artificial Intelligence Management System."
-                      isEnabled={iso42001}
-                      status={iso42001Status}
-                      onStatusChange={async (value) => {
-                        try {
-                          await updateTrustPortalFrameworks({
-                            orgId,
-                            iso42001Status: value as 'started' | 'in_progress' | 'compliant',
-                          });
-                          toast.success('ISO 42001 status updated');
-                        } catch (error) {
-                          toast.error('Failed to update ISO 42001 status');
-                        }
-                      }}
-                      onToggle={async (checked) => {
-                        try {
-                          await updateTrustPortalFrameworks({
-                            orgId,
-                            iso42001: checked,
-                          });
-                          toast.success('ISO 42001 status updated');
-                        } catch (error) {
-                          toast.error('Failed to update ISO 42001 status');
-                        }
-                      }}
-                      fileName={certificateFiles.iso42001}
-                      onFileUpload={handleFileUpload}
-                      onFilePreview={handleFilePreview}
-                      frameworkKey="iso42001"
-                      orgId={orgId}
-                    />
-                    {/* GDPR */}
-                    <ComplianceFramework
-                      title="GDPR"
-                      description="A European regulation that governs personal data protection and user privacy."
-                      isEnabled={gdpr}
-                      status={gdprStatus}
-                      onStatusChange={async (value) => {
-                        try {
-                          await updateTrustPortalFrameworks({
-                            orgId,
-                            gdprStatus: value as 'started' | 'in_progress' | 'compliant',
-                          });
-                          toast.success('GDPR status updated');
-                        } catch (error) {
-                          toast.error('Failed to update GDPR status');
-                        }
-                      }}
-                      onToggle={async (checked) => {
-                        try {
-                          await updateTrustPortalFrameworks({
-                            orgId,
-                            gdpr: checked,
-                          });
-                          toast.success('GDPR status updated');
-                        } catch (error) {
-                          toast.error('Failed to update GDPR status');
-                        }
-                      }}
-                      fileName={certificateFiles.gdpr}
-                      onFileUpload={handleFileUpload}
-                      onFilePreview={handleFilePreview}
-                      frameworkKey="gdpr"
-                      orgId={orgId}
-                    />
-                    {/* HIPAA */}
-                    <ComplianceFramework
-                      title="HIPAA"
-                      description="A US regulation that protects sensitive patient health information and medical data."
-                      isEnabled={hipaa}
-                      status={hipaaStatus}
-                      onStatusChange={async (value) => {
-                        try {
-                          await updateTrustPortalFrameworks({
-                            orgId,
-                            hipaaStatus: value as 'started' | 'in_progress' | 'compliant',
-                          });
-                          toast.success('HIPAA status updated');
-                        } catch (error) {
-                          toast.error('Failed to update HIPAA status');
-                        }
-                      }}
-                      onToggle={async (checked) => {
-                        try {
-                          await updateTrustPortalFrameworks({
-                            orgId,
-                            hipaa: checked,
-                          });
-                          toast.success('HIPAA status updated');
-                        } catch (error) {
-                          toast.error('Failed to update HIPAA status');
-                        }
-                      }}
-                      fileName={certificateFiles.hipaa}
-                      onFileUpload={handleFileUpload}
-                      onFilePreview={handleFilePreview}
-                      frameworkKey="hipaa"
-                      orgId={orgId}
-                    />
-                    {/* SOC 2 Type 1*/}
-                    <ComplianceFramework
-                      title="SOC 2 Type 1"
-                      description="A compliance framework focused on data security, availability, and confidentiality."
-                      isEnabled={soc2type1}
-                      status={soc2type1Status}
-                      onStatusChange={async (value) => {
-                        try {
-                          await updateTrustPortalFrameworks({
-                            orgId,
-                            soc2type1Status: value as 'started' | 'in_progress' | 'compliant',
-                          });
-                          toast.success('SOC 2 Type 1 status updated');
-                        } catch (error) {
-                          toast.error('Failed to update SOC 2 Type 1 status');
-                        }
-                      }}
-                      onToggle={async (checked) => {
-                        try {
-                          await updateTrustPortalFrameworks({
-                            orgId,
-                            soc2type1: checked,
-                          });
-                          toast.success('SOC 2 Type 1 status updated');
-                        } catch (error) {
-                          toast.error('Failed to update SOC 2 Type 1 status');
-                        }
-                      }}
-                      fileName={certificateFiles.soc2type1}
-                      onFileUpload={handleFileUpload}
-                      onFilePreview={handleFilePreview}
-                      frameworkKey="soc2type1"
-                      orgId={orgId}
-                    />
-                    {/* SOC 2 Type 2*/}
-                    <ComplianceFramework
-                      title="SOC 2 Type 2"
-                      description="A compliance framework focused on data security, availability, and confidentiality."
-                      isEnabled={soc2type2}
-                      status={soc2type2Status}
-                      onStatusChange={async (value) => {
-                        try {
-                          await updateTrustPortalFrameworks({
-                            orgId,
-                            soc2type2Status: value as 'started' | 'in_progress' | 'compliant',
-                          });
-                          toast.success('SOC 2 Type 2 status updated');
-                        } catch (error) {
-                          toast.error('Failed to update SOC 2 Type 2 status');
-                        }
-                      }}
-                      onToggle={async (checked) => {
-                        try {
-                          await updateTrustPortalFrameworks({
-                            orgId,
-                            soc2type2: checked,
-                          });
-                          toast.success('SOC 2 Type 2 status updated');
-                        } catch (error) {
-                          toast.error('Failed to update SOC 2 Type 2 status');
-                        }
-                      }}
-                      fileName={certificateFiles.soc2type2}
-                      onFileUpload={handleFileUpload}
-                      onFilePreview={handleFilePreview}
-                      frameworkKey="soc2type2"
-                      orgId={orgId}
-                    />
-                    {/* PCI DSS */}
-                    <ComplianceFramework
-                      title="PCI DSS"
-                      description="A compliance framework focused on data security, availability, and confidentiality."
-                      isEnabled={pcidss}
-                      status={pcidssStatus}
-                      onStatusChange={async (value) => {
-                        try {
-                          await updateTrustPortalFrameworks({
-                            orgId,
-                            pcidssStatus: value as 'started' | 'in_progress' | 'compliant',
-                          });
-                          toast.success('PCI DSS status updated');
-                        } catch (error) {
-                          toast.error('Failed to update PCI DSS status');
-                        }
-                      }}
-                      onToggle={async (checked) => {
-                        try {
-                          await updateTrustPortalFrameworks({
-                            orgId,
-                            pcidss: checked,
-                          });
-                          toast.success('PCI DSS status updated');
-                        } catch (error) {
-                          toast.error('Failed to update PCI DSS status');
-                        }
-                      }}
-                      fileName={certificateFiles.pcidss}
-                      onFileUpload={handleFileUpload}
-                      onFilePreview={handleFilePreview}
-                      frameworkKey="pcidss"
-                      orgId={orgId}
-                    />
-                    {/* NEN 7510 */}
-                    <ComplianceFramework
-                      title="NEN 7510"
-                      description="A Dutch standard for managing information security systems."
-                      isEnabled={nen7510}
-                      status={nen7510Status}
-                      onStatusChange={async (value) => {
-                        try {
-                          await updateTrustPortalFrameworks({
-                            orgId,
-                            nen7510Status: value as 'started' | 'in_progress' | 'compliant',
-                          });
-                          toast.success('NEN 7510 status updated');
-                        } catch (error) {
-                          toast.error('Failed to update NEN 7510 status');
-                        }
-                      }}
-                      onToggle={async (checked) => {
-                        try {
-                          await updateTrustPortalFrameworks({
-                            orgId,
-                            nen7510: checked,
-                          });
-                          toast.success('NEN 7510 status updated');
-                        } catch (error) {
-                          toast.error('Failed to update NEN 7510 status');
-                        }
-                      }}
-                      fileName={certificateFiles.nen7510}
-                      onFileUpload={handleFileUpload}
-                      onFilePreview={handleFilePreview}
-                      frameworkKey="nen7510"
-                      orgId={orgId}
-                    />
-                    {/* ISO 9001 */}
-                    <ComplianceFramework
-                      title="ISO 9001"
-                      description="An international standard for quality management systems."
-                      isEnabled={iso9001}
-                      status={iso9001Status}
-                      onStatusChange={async (value) => {
-                        try {
-                          await updateTrustPortalFrameworks({
-                            orgId,
-                            iso9001Status: value as 'started' | 'in_progress' | 'compliant',
-                          });
-                          toast.success('ISO 9001 status updated');
-                        } catch (error) {
-                          toast.error('Failed to update ISO 9001 status');
-                        }
-                      }}
-                      onToggle={async (checked) => {
-                        try {
-                          await updateTrustPortalFrameworks({
-                            orgId,
-                            iso9001: checked,
-                          });
-                          toast.success('ISO 9001 status updated');
-                        } catch (error) {
-                          toast.error('Failed to update ISO 9001 status');
-                        }
-                      }}
-                      fileName={certificateFiles.iso9001}
-                      onFileUpload={handleFileUpload}
-                      onFilePreview={handleFilePreview}
-                      frameworkKey="iso9001"
-                      orgId={orgId}
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-            {form.watch('enabled') && (
-              <div className="pt-6">
-                <TrustPortalAdditionalDocumentsSection
-                  organizationId={orgId}
-                  enabled={true}
-                  documents={additionalDocuments}
-                />
-              </div>
-            )}
-          </div>
-        </div>
+            </div>
+          </TabsContent>
+
+          {/* Branding Tab */}
+          <TabsContent value="branding">
+            <div className="pt-6 space-y-6">
+              <UpdateTrustFavicon currentFaviconUrl={faviconUrl ?? null} />
+              <BrandSettings orgId={orgId} primaryColor={primaryColor ?? null} />
+            </div>
+          </TabsContent>
+
+          {/* Content Tab */}
+          <TabsContent value="content">
+            <div className="pt-6">
+              <TrustPortalOverview initialData={overview} orgId={orgId} />
+            </div>
+          </TabsContent>
+
+          {/* Links Tab */}
+          <TabsContent value="links">
+            <div className="pt-6">
+              <TrustPortalCustomLinks initialLinks={customLinks} orgId={orgId} />
+            </div>
+          </TabsContent>
+
+          {/* Vendors Tab */}
+          <TabsContent value="vendors">
+            <div className="pt-6">
+              <TrustPortalVendors initialVendors={vendors} orgId={orgId} />
+            </div>
+          </TabsContent>
+
+          {/* FAQ Tab */}
+          <TabsContent value="faq">
+            <div className="pt-6">
+              <TrustPortalFaqBuilder initialFaqs={faqs} orgId={orgId} />
+            </div>
+          </TabsContent>
+
+          {/* Documents Tab */}
+          <TabsContent value="documents">
+            <div className="pt-6">
+              <TrustPortalAdditionalDocumentsSection
+                organizationId={orgId}
+                enabled={true}
+                documents={additionalDocuments}
+              />
+            </div>
+          </TabsContent>
+
+        </Tabs>
       </form>
-      {form.watch('enabled') && (
-        <div className="pt-6">
-          <TrustPortalDomain
-            domain={domain}
-            domainVerified={domainVerified}
-            orgId={orgId}
-            isVercelDomain={isVercelDomain ?? false}
-            vercelVerification={vercelVerification ?? null}
-          />
-        </div>
-      )}
     </Form>
   );
 }
@@ -928,8 +843,8 @@ export function TrustPortalSwitch({
 function ComplianceFramework({
   title,
   description,
-  isEnabled,
-  status,
+  isEnabled: isEnabledProp,
+  status: statusProp,
   onStatusChange,
   onToggle,
   fileName,
@@ -937,6 +852,7 @@ function ComplianceFramework({
   onFilePreview,
   frameworkKey,
   orgId,
+  disabled,
 }: {
   title: string;
   description: string;
@@ -949,7 +865,10 @@ function ComplianceFramework({
   onFilePreview?: (frameworkKey: string) => Promise<void>;
   frameworkKey: string;
   orgId: string;
+  disabled?: boolean;
 }) {
+  const [isEnabled, setIsEnabled] = useState(isEnabledProp);
+  const [status, setStatus] = useState(statusProp);
   const [isUploading, setIsUploading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1061,26 +980,40 @@ function ComplianceFramework({
 
   return (
     <>
-      <Card className="rounded-lg border">
-        <CardHeader className="pb-2">
+      <Card>
+        <CardHeader>
           <div className="flex items-center gap-4">
             <div className="shrink-0">{logo}</div>
             <div>
-              <CardTitle className="text-lg leading-tight font-semibold">{title}</CardTitle>
-              <CardDescription className="text-muted-foreground mt-1 line-clamp-3 text-sm">
-                {description}
-              </CardDescription>
+              <CardTitle>{title}</CardTitle>
+              <div className="line-clamp-3">
+                <CardDescription>
+                  {description}
+                </CardDescription>
+              </div>
             </div>
           </div>
         </CardHeader>
         <div className="mt-4 border-t" />
-        <CardContent className="pt-4 space-y-4">
+        <CardContent>
           <div className="flex flex-row items-center justify-between gap-6">
             <div className="min-w-0 flex-1">
               {isEnabled ? (
-                <Select defaultValue={status} onValueChange={onStatusChange}>
-                  <SelectTrigger className="min-w-[180px] text-base font-medium">
-                    <SelectValue placeholder="Select status" className="w-auto" />
+                <Select disabled={disabled} defaultValue={status} value={status} onValueChange={async (value) => {
+                  if (!value) return;
+                  const prev = status;
+                  setStatus(value);
+                  try {
+                    await onStatusChange(value);
+                  } catch {
+                    setStatus(prev);
+                  }
+                }}>
+                  <SelectTrigger>
+                    <span className="flex items-center gap-2">
+                      <span className={`inline-block h-4 w-4 rounded-sm ${status === 'compliant' ? 'bg-primary' : status === 'in_progress' ? 'bg-yellow-400' : 'bg-gray-300'}`} />
+                      {status === 'compliant' ? 'Compliant' : status === 'in_progress' ? 'In Progress' : 'Started'}
+                    </span>
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="started">
@@ -1110,7 +1043,14 @@ function ComplianceFramework({
               )}
             </div>
             <div className="shrink-0 pl-2">
-              <Switch checked={isEnabled} onCheckedChange={onToggle} />
+              <Switch disabled={disabled} checked={isEnabled} onCheckedChange={async (checked) => {
+                setIsEnabled(checked);
+                try {
+                  await onToggle(checked);
+                } catch {
+                  setIsEnabled(!checked);
+                }
+              }} />
             </div>
           </div>
 
@@ -1128,7 +1068,7 @@ function ComplianceFramework({
                     await processFile(file);
                   }
                 }}
-                disabled={isUploading}
+                disabled={isUploading || disabled}
               />
 
               {/* Section Header */}
@@ -1147,9 +1087,9 @@ function ComplianceFramework({
                       <p className="text-xs text-muted-foreground">Certificate uploaded</p>
                     </div>
                     {onFilePreview && (
-                      <TooltipProvider delayDuration={100}>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
                             <button
                               type="button"
                               onClick={async () => {
@@ -1164,42 +1104,41 @@ function ComplianceFramework({
                                 }
                               }}
                               className="text-xs font-medium text-primary hover:text-primary/80 hover:underline transition-colors flex items-center gap-1"
-                            >
-                              <Eye className="h-3.5 w-3.5" />
-                              View
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent>Open certificate in new tab</TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
+                            />
+                          }
+                        >
+                          <Eye className="h-3.5 w-3.5" />
+                          View
+                        </TooltipTrigger>
+                        <TooltipContent>Open certificate in new tab</TooltipContent>
+                      </Tooltip>
                     )}
                   </div>
 
                   {/* Action Bar */}
                   <div className="flex items-center gap-2 pt-1">
-                    <TooltipProvider delayDuration={100}>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
                           <Button
                             type="button"
                             variant="outline"
                             size="sm"
                             onClick={() => fileInputRef.current?.click()}
-                            disabled={isUploading}
-                            className="h-8 gap-1.5 text-xs font-medium hover:bg-primary hover:text-primary-foreground hover:border-primary transition-colors"
-                          >
-                            <Upload className="h-3.5 w-3.5" />
-                            Replace
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Replace current certificate (PDF)</TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
+                            disabled={isUploading || disabled}
+                            iconLeft={<Upload className="h-3.5 w-3.5" />}
+                          />
+                        }
+                      >
+                        Replace
+                      </TooltipTrigger>
+                      <TooltipContent>Replace current certificate (PDF)</TooltipContent>
+                    </Tooltip>
 
                     {onFilePreview && (
-                      <TooltipProvider delayDuration={100}>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
+                      <Tooltip>
+                        <TooltipTrigger
+                          render={
                             <Button
                               type="button"
                               variant="outline"
@@ -1215,15 +1154,14 @@ function ComplianceFramework({
                                   toast.error(message);
                                 }
                               }}
-                              className="h-8 gap-1.5 text-xs font-medium hover:bg-primary hover:text-primary-foreground hover:border-primary transition-colors"
-                            >
-                              <Download className="h-3.5 w-3.5" />
-                              Download
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Download certificate</TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
+                              iconLeft={<Download className="h-3.5 w-3.5" />}
+                            />
+                          }
+                        >
+                          Download
+                        </TooltipTrigger>
+                        <TooltipContent>Download certificate</TooltipContent>
+                      </Tooltip>
                     )}
                   </div>
                 </div>
@@ -1234,7 +1172,7 @@ function ComplianceFramework({
                   onDragLeave={handleDragLeave}
                   onDragOver={handleDragOver}
                   onDrop={handleDrop}
-                  onClick={() => !isUploading && fileInputRef.current?.click()}
+                  onClick={() => !isUploading && !disabled && fileInputRef.current?.click()}
                   className={`
                     relative rounded-lg bg-muted/40 border border-border/50 p-4 cursor-pointer
                     h-[122px] flex items-center

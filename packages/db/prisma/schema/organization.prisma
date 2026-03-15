@@ -9,7 +9,12 @@ model Organization {
   website             String?
   onboardingCompleted Boolean     @default(false)
   hasAccess           Boolean     @default(false)
-  advancedModeEnabled Boolean     @default(false)
+  advancedModeEnabled             Boolean     @default(false)
+  evidenceApprovalEnabled         Boolean     @default(false)
+  deviceAgentStepEnabled          Boolean     @default(true)
+  securityTrainingStepEnabled     Boolean     @default(true)
+  whistleblowerReportEnabled      Boolean     @default(true)
+  accessRequestFormEnabled        Boolean     @default(true)
 
   // FleetDM
   fleetDmLabelId        Int?
@@ -33,13 +38,16 @@ model Organization {
   taskItems                          TaskItem[]
   comments                           Comment[]
   attachments                        Attachment[]
+  evidenceSubmissions                EvidenceSubmission[]
   trust                              Trust[]
   context                            Context[]
   secrets                            Secret[]
+  securityPenetrationTestRuns        SecurityPenetrationTestRun[]
   trustAccessRequests                TrustAccessRequest[]
   trustNdaAgreements                 TrustNDAAgreement[]
   trustDocuments                     TrustDocument[]
   trustResources                     TrustResource[]                     @relation("OrganizationTrustResources")
+  trustCustomLinks                   TrustCustomLink[]
   knowledgeBaseDocuments             KnowledgeBaseDocument[]
   questionnaires                     Questionnaire[]
   securityQuestionnaireManualAnswers SecurityQuestionnaireManualAnswer[]
@@ -51,12 +59,26 @@ model Organization {
   integrationConnections IntegrationConnection[]
   integrationOAuthApps   IntegrationOAuthApp[]
 
+  // Pentest Subscription
+  pentestSubscription PentestSubscription?
+  billing             OrganizationBilling?
+
   // Browser Automation
   browserbaseContext BrowserbaseContext?
   fleetPolicyResults FleetPolicyResult[]
 
   // Findings
   findings Finding[]
+
+  // Device Agent
+  devices Device[]
+
+  // Org Chart
+  organizationChart OrganizationChart?
+
+  // RBAC
+  organizationRoles          OrganizationRole[]
+  roleNotificationSettings   RoleNotificationSetting[]
 
   @@index([slug])
 }

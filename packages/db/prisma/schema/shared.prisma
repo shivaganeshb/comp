@@ -2,17 +2,20 @@ model ApiKey {
   id         String    @id @default(dbgenerated("generate_prefixed_cuid('apk'::text)"))
   name       String
   key        String    @unique
+  keyPrefix  String?
   salt       String?
   createdAt  DateTime  @default(now())
   expiresAt  DateTime?
   lastUsedAt DateTime?
   isActive   Boolean   @default(true)
+  scopes     String[]  @default([])
 
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   organizationId String
 
   @@index([organizationId])
   @@index([key])
+  @@index([keyPrefix])
 }
 
 model AuditLog {
@@ -50,6 +53,21 @@ enum AuditLogEntityType {
   integration
   trust
   finding
+}
+
+enum EvidenceFormType {
+  board_meeting                   @map("board-meeting")
+  it_leadership_meeting           @map("it-leadership-meeting")
+  risk_committee_meeting          @map("risk-committee-meeting")
+  meeting
+  access_request                  @map("access-request")
+  whistleblower_report            @map("whistleblower-report")
+  penetration_test                @map("penetration-test")
+  rbac_matrix                     @map("rbac-matrix")
+  infrastructure_inventory        @map("infrastructure-inventory")
+  employee_performance_evaluation @map("employee-performance-evaluation")
+  network_diagram                 @map("network-diagram")
+  tabletop_exercise               @map("tabletop-exercise")
 }
 
 model GlobalVendors {

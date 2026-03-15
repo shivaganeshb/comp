@@ -40,6 +40,10 @@ yarn-error.log*
 # turbo
 .turbo
 
+# claude code - personal settings and memory (commands/ is shared)
+.claude/settings.local.json
+.claude/projects/
+
 # react-email
 .react-email
 packages/email/public
@@ -87,6 +91,7 @@ packages/*/dist
 scripts/sync-release-branch.sh
 /.vscode
 
+<<<<<<< HEAD
 # Snyk Security Extension - AI Rules (auto-generated)
 .github/instructions/snyk_rules.instructions.md
 
@@ -94,3 +99,8 @@ scripts/sync-release-branch.sh
 *-key.json
 *-credentials.json
 apps/api/CLAUDE.md
+=======
+.claude/audit-findings.md
+
+.superpowers/*
+>>>>>>> upstream/main

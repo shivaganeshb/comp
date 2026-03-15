@@ -1,4 +1,8 @@
+import { filterComplianceMembers } from '@/lib/compliance';
 import { auth } from '@/utils/auth';
+import { s3Client, BUCKET_NAME } from '@/app/s3';
+import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { db } from '@db';
 import type { Metadata } from 'next';
 import { headers } from 'next/headers';
@@ -7,9 +11,12 @@ import { TeamMembers } from './all/components/TeamMembers';
 import { PeoplePageTabs } from './components/PeoplePageTabs';
 import { EmployeesOverview } from './dashboard/components/EmployeesOverview';
 import { DeviceComplianceChart } from './devices/components/DeviceComplianceChart';
+import { DeviceAgentDevicesList } from './devices/components/DeviceAgentDevicesList';
 import { EmployeeDevicesList } from './devices/components/EmployeeDevicesList';
-import { getEmployeeDevices } from './devices/data';
+import { getEmployeeDevicesFromDB, getFleetHosts } from './devices/data';
+import type { DeviceWithChecks } from './devices/types';
 import type { Host } from './devices/types';
+import { OrgChartContent } from './org-chart/components/OrgChartContent';
 
 export default async function PeoplePage({ params }: { params: Promise<{ orgId: string }> }) {
   const { orgId } = await params;
@@ -22,42 +29,160 @@ export default async function PeoplePage({ params }: { params: Promise<{ orgId: 
     return redirect('/');
   }
 
-  // Check if there are employees to show the Employee Tasks tab
-  const allMembers = await db.member.findMany({
+  const currentUserMember = await db.member.findFirst({
+    where: {
+      organizationId: orgId,
+      userId: session.user.id,
+    },
+  });
+  const currentUserRoles = currentUserMember?.role?.split(',').map((r) => r.trim()) ?? [];
+  const canManageMembers = currentUserRoles.some((role) => ['owner', 'admin'].includes(role));
+  const isAuditor = currentUserRoles.includes('auditor');
+  const canInviteUsers = canManageMembers || isAuditor;
+  const isCurrentUserOwner = currentUserRoles.includes('owner');
+
+  // Fetch members with user info (used for both employee check and org chart)
+  const membersWithUsers = await db.member.findMany({
     where: {
       organizationId: orgId,
       deactivated: false,
+      isActive: true,
+    },
+    include: {
+      user: {
+        select: {
+          name: true,
+          email: true,
+          isPlatformAdmin: true,
+        },
+      },
     },
   });
 
-  const employees = allMembers.filter((member) => {
-    const roles = member.role.includes(',') ? member.role.split(',') : [member.role];
-    return roles.includes('employee') || roles.includes('contractor');
-  });
+  // Check if there are members with compliance obligations
+  const employees = await filterComplianceMembers(membersWithUsers, orgId);
 
   const showEmployeeTasks = employees.length > 0;
 
-  // Fetch devices data
-  let devices: Host[] = [];
-  try {
-    const fetchedDevices = await getEmployeeDevices();
-    devices = fetchedDevices || [];
-  } catch (error) {
-    console.error('Error fetching employee devices:', error);
-    devices = [];
+  // Fetch org chart data directly via Prisma
+  const orgChart = await db.organizationChart.findUnique({
+    where: { organizationId: orgId },
+  });
+
+  // Generate a signed URL for uploaded images
+  let orgChartData = null;
+  if (orgChart) {
+    let signedImageUrl: string | null = null;
+    if (
+      orgChart.type === 'uploaded' &&
+      orgChart.uploadedImageUrl &&
+      s3Client &&
+      BUCKET_NAME
+    ) {
+      try {
+        const cmd = new GetObjectCommand({
+          Bucket: BUCKET_NAME,
+          Key: orgChart.uploadedImageUrl,
+        });
+        signedImageUrl = await getSignedUrl(s3Client, cmd, { expiresIn: 900 });
+      } catch {
+        // Signed URL generation failed; image won't render
+      }
+    }
+
+    // Sanitize nodes/edges from JSON to ensure valid React Flow structures
+    const rawNodes = Array.isArray(orgChart.nodes) ? orgChart.nodes : [];
+    const rawEdges = Array.isArray(orgChart.edges) ? orgChart.edges : [];
+
+    const sanitizedNodes = (rawNodes as Record<string, unknown>[])
+      .filter((n) => n && typeof n === 'object' && n.id)
+      .map((n) => ({
+        ...n,
+        position: n.position && typeof (n.position as Record<string, unknown>).x === 'number'
+          ? n.position
+          : { x: 0, y: 0 },
+      }));
+
+    const sanitizedEdges = (rawEdges as Record<string, unknown>[])
+      .filter((e) => e && typeof e === 'object' && e.source && e.target)
+      .map((e, i) => ({
+        ...e,
+        id: e.id || `edge-${e.source}-${e.target}-${i}`,
+      }));
+
+    orgChartData = {
+      ...orgChart,
+      nodes: sanitizedNodes,
+      edges: sanitizedEdges,
+      updatedAt: orgChart.updatedAt.toISOString(),
+      signedImageUrl,
+    };
   }
+
+  // Fetch devices from both sources independently — one failing shouldn't break the other
+  let agentDevices: DeviceWithChecks[] = [];
+  let fleetDevices: Host[] = [];
+
+  const [agentResult, fleetResult] = await Promise.allSettled([
+    getEmployeeDevicesFromDB(),
+    getFleetHosts(),
+  ]);
+
+  if (agentResult.status === 'fulfilled') {
+    agentDevices = agentResult.value;
+  } else {
+    console.error('Error fetching device agent devices:', agentResult.reason);
+  }
+
+  if (fleetResult.status === 'fulfilled') {
+    fleetDevices = fleetResult.value || [];
+  } else {
+    console.error('Error fetching Fleet devices:', fleetResult.reason);
+  }
+
+  // Filter out Fleet hosts for members who already have device-agent devices
+  // Device agent takes priority over Fleet
+  const memberIdsWithAgent = new Set(
+    agentDevices.map((d) => d.memberId).filter(Boolean),
+  );
+  const filteredFleetDevices = fleetDevices.filter(
+    (host) => !host.member_id || !memberIdsWithAgent.has(host.member_id),
+  );
 
   return (
     <PeoplePageTabs
-      peopleContent={<TeamMembers />}
+      peopleContent={
+        <TeamMembers
+          canManageMembers={canManageMembers}
+          canInviteUsers={canInviteUsers}
+          isAuditor={isAuditor}
+          isCurrentUserOwner={isCurrentUserOwner}
+          organizationId={orgId}
+        />
+      }
       employeeTasksContent={showEmployeeTasks ? <EmployeesOverview /> : null}
       devicesContent={
-        <>
-          <DeviceComplianceChart devices={devices} />
-          <EmployeeDevicesList devices={devices} />
-        </>
+        <div className="space-y-6">
+          {/* Device Agent devices (new system) */}
+          {agentDevices.length > 0 && (
+            <DeviceAgentDevicesList devices={agentDevices} />
+          )}
+
+          {/* Fleet devices (legacy) — shown exactly as main branch */}
+          <DeviceComplianceChart devices={filteredFleetDevices} />
+          <EmployeeDevicesList devices={filteredFleetDevices} isCurrentUserOwner={isCurrentUserOwner} />
+        </div>
+      }
+      orgChartContent={
+        <OrgChartContent
+          chartData={orgChartData as any}
+          members={membersWithUsers}
+        />
       }
       showEmployeeTasks={showEmployeeTasks}
+      canInviteUsers={canInviteUsers}
+      canManageMembers={canManageMembers}
+      organizationId={orgId}
     />
   );
 }

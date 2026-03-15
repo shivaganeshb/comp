@@ -7,17 +7,24 @@ import {
   HttpException,
   HttpStatus,
   Logger,
+  UseGuards,
 } from '@nestjs/common';
+import { ApiTags, ApiSecurity } from '@nestjs/swagger';
+import { HybridAuthGuard } from '../../auth/hybrid-auth.guard';
+import { PermissionGuard } from '../../auth/permission.guard';
+import { RequirePermission } from '../../auth/require-permission.decorator';
+import { OrganizationId } from '../../auth/auth-context.decorator';
 import { db } from '@db';
 import { ConnectionRepository } from '../repositories/connection.repository';
 import { CredentialVaultService } from '../services/credential-vault.service';
 import { OAuthCredentialsService } from '../services/oauth-credentials.service';
-import { getManifest, type OAuthConfig } from '@comp/integration-platform';
-
-interface SyncQuery {
-  organizationId: string;
-  connectionId: string;
-}
+import {
+  getManifest,
+  type OAuthConfig,
+  type RampUser,
+  type RampUserStatus,
+  type RampUsersResponse,
+} from '@comp/integration-platform';
 
 interface GoogleWorkspaceUser {
   id: string;
@@ -37,23 +44,58 @@ interface GoogleWorkspaceUsersResponse {
   nextPageToken?: string;
 }
 
-interface RampUser {
-  id: string;
-  email: string;
-  first_name?: string;
-  last_name?: string;
-  employee_id?: string | null;
-  status?: 'USER_ACTIVE' | 'USER_INACTIVE' | 'USER_SUSPENDED';
-}
+type GoogleWorkspaceSyncFilterMode = 'all' | 'exclude' | 'include';
 
-interface RampUsersResponse {
-  data: RampUser[];
-  page: {
-    next?: string | null;
-  };
-}
+const GOOGLE_WORKSPACE_SYNC_FILTER_MODES =
+  new Set<GoogleWorkspaceSyncFilterMode>(['all', 'exclude', 'include']);
+
+const parseSyncFilterTerms = (value: unknown): string[] => {
+  const rawValues = Array.isArray(value)
+    ? value.map((item) => String(item))
+    : typeof value === 'string'
+      ? [value]
+      : [];
+
+  return Array.from(
+    new Set(
+      rawValues
+        .flatMap((item) => item.split(/[\n,;]+/))
+        .map((item) => item.trim().toLowerCase())
+        .filter((item) => item.length > 0),
+    ),
+  );
+};
+
+const isFullEmailTerm = (term: string): boolean =>
+  /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(term);
+
+const matchesSyncFilterTerm = (email: string, term: string): boolean => {
+  if (email === term) {
+    return true;
+  }
+
+  if (term.startsWith('@')) {
+    return email.endsWith(term);
+  }
+
+  if (isFullEmailTerm(term)) {
+    return false;
+  }
+
+  if (term.includes('@')) {
+    return email.includes(term);
+  }
+
+  return email.endsWith(`@${term}`) || email.includes(term);
+};
+
+const matchesSyncFilterTerms = (email: string, terms: string[]): boolean =>
+  terms.some((term) => matchesSyncFilterTerm(email, term));
 
 @Controller({ path: 'integrations/sync', version: '1' })
+@ApiTags('Integrations')
+@UseGuards(HybridAuthGuard, PermissionGuard)
+@ApiSecurity('apikey')
 export class SyncController {
   private readonly logger = new Logger(SyncController.name);
 
@@ -67,12 +109,14 @@ export class SyncController {
    * Sync employees from Google Workspace
    */
   @Post('google-workspace/employees')
-  async syncGoogleWorkspaceEmployees(@Query() query: SyncQuery) {
-    const { organizationId, connectionId } = query;
-
-    if (!organizationId || !connectionId) {
+  @RequirePermission('integration', 'update')
+  async syncGoogleWorkspaceEmployees(
+    @OrganizationId() organizationId: string,
+    @Query('connectionId') connectionId: string,
+  ) {
+    if (!connectionId) {
       throw new HttpException(
-        'organizationId and connectionId are required',
+        'connectionId is required',
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -225,17 +269,72 @@ export class SyncController {
       );
     }
 
-    // Separate active and suspended users
-    const activeUsers = users.filter((u) => !u.suspended);
-    const suspendedEmails = new Set(
+    const syncVariables = (connection.variables || {}) as Record<
+      string,
+      unknown
+    >;
+    const rawSyncFilterMode = syncVariables.sync_user_filter_mode;
+    const syncFilterMode: GoogleWorkspaceSyncFilterMode =
+      typeof rawSyncFilterMode === 'string' &&
+      GOOGLE_WORKSPACE_SYNC_FILTER_MODES.has(
+        rawSyncFilterMode as GoogleWorkspaceSyncFilterMode,
+      )
+        ? (rawSyncFilterMode as GoogleWorkspaceSyncFilterMode)
+        : 'all';
+    const excludedTerms = parseSyncFilterTerms(
+      syncVariables.sync_excluded_emails,
+    );
+    const includedTerms = parseSyncFilterTerms(
+      syncVariables.sync_included_emails,
+    );
+
+    let effectiveSyncFilterMode = syncFilterMode;
+    if (syncFilterMode === 'include' && includedTerms.length === 0) {
+      this.logger.warn(
+        `Google Workspace sync for org ${organizationId} is set to include mode, but include list is empty. Falling back to all users.`,
+      );
+      effectiveSyncFilterMode = 'all';
+    }
+
+    const filteredUsers = users.filter((user) => {
+      const email = user.primaryEmail.toLowerCase();
+
+      if (effectiveSyncFilterMode === 'exclude' && excludedTerms.length > 0) {
+        return !matchesSyncFilterTerms(email, excludedTerms);
+      }
+
+      if (effectiveSyncFilterMode === 'include') {
+        return matchesSyncFilterTerms(email, includedTerms);
+      }
+
+      return true;
+    });
+
+    this.logger.log(
+      `Google Workspace sync filter mode "${effectiveSyncFilterMode}" kept ${filteredUsers.length}/${users.length} users`,
+    );
+
+    // Active users to import/reactivate are based on the selected filter mode
+    const activeUsers = filteredUsers.filter((u) => !u.suspended);
+    const filteredSuspendedEmails = new Set(
+      filteredUsers
+        .filter((u) => u.suspended)
+        .map((u) => u.primaryEmail.toLowerCase()),
+    );
+    const filteredActiveEmails = new Set(
+      activeUsers.map((u) => u.primaryEmail.toLowerCase()),
+    );
+    const allSuspendedEmails = new Set(
       users.filter((u) => u.suspended).map((u) => u.primaryEmail.toLowerCase()),
     );
-    const activeEmails = new Set(
-      activeUsers.map((u) => u.primaryEmail.toLowerCase()),
+    const allActiveEmails = new Set(
+      users
+        .filter((u) => !u.suspended)
+        .map((u) => u.primaryEmail.toLowerCase()),
     );
 
     this.logger.log(
-      `Found ${activeUsers.length} active users and ${suspendedEmails.size} suspended users in Google Workspace`,
+      `Found ${activeUsers.length} active users and ${filteredSuspendedEmails.size} suspended users in Google Workspace after sync filtering`,
     );
 
     // Import users into the organization
@@ -254,7 +353,7 @@ export class SyncController {
           | 'reactivated'
           | 'error';
         reason?: string;
-        rampStatus?: RampUser['status'] | 'USER_MISSING';
+        rampStatus?: RampUserStatus | 'USER_MISSING';
       }>,
     };
 
@@ -355,25 +454,58 @@ export class SyncController {
       },
     });
 
-    // Get the domains from ALL users (including suspended) to track which domains Google Workspace manages
-    // This ensures members get deactivated even when an entire domain has no active users
-    const gwDomains = new Set(
-      users.map((u) => u.primaryEmail.split('@')[1]?.toLowerCase()),
-    );
+    const deactivationGwDomains =
+      effectiveSyncFilterMode === 'include'
+        ? new Set(users.map((u) => u.primaryEmail.split('@')[1]?.toLowerCase()))
+        : new Set(
+            filteredUsers.map((u) =>
+              u.primaryEmail.split('@')[1]?.toLowerCase(),
+            ),
+          );
+    const deactivationSuspendedEmails =
+      effectiveSyncFilterMode === 'include'
+        ? allSuspendedEmails
+        : filteredSuspendedEmails;
+    const deactivationActiveEmails =
+      effectiveSyncFilterMode === 'include'
+        ? allActiveEmails
+        : filteredActiveEmails;
 
     for (const member of allOrgMembers) {
       const memberEmail = member.user.email.toLowerCase();
       const memberDomain = memberEmail.split('@')[1];
+      const memberRoles = member.role
+        .split(',')
+        .map((role) => role.trim().toLowerCase());
 
       // Only check members whose email domain matches the Google Workspace domain
-      if (!memberDomain || !gwDomains.has(memberDomain)) {
+      if (!memberDomain || !deactivationGwDomains.has(memberDomain)) {
+        continue;
+      }
+
+      // Safety guard: never auto-deactivate privileged members via sync.
+      if (
+        memberRoles.includes('owner') ||
+        memberRoles.includes('admin') ||
+        memberRoles.includes('auditor')
+      ) {
+        continue;
+      }
+
+      // In exclude mode we keep excluded users unchanged and only stop syncing them.
+      if (
+        effectiveSyncFilterMode === 'exclude' &&
+        excludedTerms.length > 0 &&
+        matchesSyncFilterTerms(memberEmail, excludedTerms)
+      ) {
         continue;
       }
 
       // If this member's email is suspended OR not in the active list, deactivate them
-      const isSuspended = suspendedEmails.has(memberEmail);
+      const isSuspended = deactivationSuspendedEmails.has(memberEmail);
       const isDeleted =
-        !activeEmails.has(memberEmail) && !suspendedEmails.has(memberEmail);
+        !deactivationActiveEmails.has(memberEmail) &&
+        !deactivationSuspendedEmails.has(memberEmail);
 
       if (isSuspended || isDeleted) {
         try {
@@ -402,7 +534,7 @@ export class SyncController {
     return {
       success: true,
       totalFound: activeUsers.length,
-      totalSuspended: suspendedEmails.size,
+      totalSuspended: filteredSuspendedEmails.size,
       ...results,
     };
   }
@@ -411,15 +543,10 @@ export class SyncController {
    * Check if Google Workspace is connected for an organization
    */
   @Post('google-workspace/status')
+  @RequirePermission('integration', 'read')
   async getGoogleWorkspaceStatus(
-    @Query('organizationId') organizationId: string,
+    @OrganizationId() organizationId: string,
   ) {
-    if (!organizationId) {
-      throw new HttpException(
-        'organizationId is required',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
 
     const connection = await this.connectionRepository.findBySlugAndOrg(
       'google-workspace',
@@ -447,12 +574,14 @@ export class SyncController {
    * Sync employees from Rippling
    */
   @Post('rippling/employees')
-  async syncRipplingEmployees(@Query() query: SyncQuery) {
-    const { organizationId, connectionId } = query;
-
-    if (!organizationId || !connectionId) {
+  @RequirePermission('integration', 'update')
+  async syncRipplingEmployees(
+    @OrganizationId() organizationId: string,
+    @Query('connectionId') connectionId: string,
+  ) {
+    if (!connectionId) {
       throw new HttpException(
-        'organizationId and connectionId are required',
+        'connectionId is required',
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -686,7 +815,7 @@ export class SyncController {
           | 'reactivated'
           | 'error';
         reason?: string;
-        rampStatus?: RampUser['status'] | 'USER_MISSING';
+        rampStatus?: RampUserStatus | 'USER_MISSING';
       }>,
     };
 
@@ -815,13 +944,8 @@ export class SyncController {
    * Check if Rippling is connected for an organization
    */
   @Post('rippling/status')
-  async getRipplingStatus(@Query('organizationId') organizationId: string) {
-    if (!organizationId) {
-      throw new HttpException(
-        'organizationId is required',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
+  @RequirePermission('integration', 'read')
+  async getRipplingStatus(@OrganizationId() organizationId: string) {
 
     const connection = await this.connectionRepository.findBySlugAndOrg(
       'rippling',
@@ -849,12 +973,14 @@ export class SyncController {
    * Sync employees from Ramp
    */
   @Post('ramp/employees')
-  async syncRampEmployees(@Query() query: SyncQuery) {
-    const { organizationId, connectionId } = query;
-
-    if (!organizationId || !connectionId) {
+  @RequirePermission('integration', 'update')
+  async syncRampEmployees(
+    @OrganizationId() organizationId: string,
+    @Query('connectionId') connectionId: string,
+  ) {
+    if (!connectionId) {
       throw new HttpException(
-        'organizationId and connectionId are required',
+        'connectionId is required',
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -945,7 +1071,9 @@ export class SyncController {
       );
     }
 
-    const fetchRampUsers = async (status?: RampUser['status']) => {
+    const MAX_RETRIES = 3;
+
+    const fetchRampUsers = async (status?: RampUserStatus) => {
       const users: RampUser[] = [];
       let nextUrl: string | null = null;
 
@@ -961,12 +1089,39 @@ export class SyncController {
             }
           }
 
-          const response = await fetch(url.toString(), {
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              'Content-Type': 'application/json',
-            },
-          });
+          let response: Response | null = null;
+          for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+            response = await fetch(url.toString(), {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                'Content-Type': 'application/json',
+              },
+            });
+
+            if (
+              response.status === 429 ||
+              (response.status >= 500 && response.status < 600)
+            ) {
+              const retryAfter = response.headers.get('Retry-After');
+              const delay = retryAfter
+                ? parseInt(retryAfter, 10) * 1000
+                : Math.min(1000 * 2 ** attempt, 30000);
+              this.logger.warn(
+                `Ramp API returned ${response.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_RETRIES})`,
+              );
+              await new Promise((r) => setTimeout(r, delay));
+              continue;
+            }
+
+            break;
+          }
+
+          if (!response) {
+            throw new HttpException(
+              'Failed to fetch users from Ramp',
+              HttpStatus.BAD_GATEWAY,
+            );
+          }
 
           if (!response.ok) {
             if (response.status === 401) {
@@ -1015,6 +1170,21 @@ export class SyncController {
     const suspendedUsers = await fetchRampUsers('USER_SUSPENDED');
     const users = [...baseUsers, ...suspendedUsers];
 
+    // Filter out non-syncable statuses (pending invites, onboarding, expired)
+    const syncableStatuses = new Set<RampUserStatus>([
+      'USER_ACTIVE',
+      'USER_INACTIVE',
+      'USER_SUSPENDED',
+    ]);
+    const skippedStatuses = users.filter(
+      (u) => u.status && !syncableStatuses.has(u.status),
+    );
+    if (skippedStatuses.length > 0) {
+      this.logger.log(
+        `Skipping ${skippedStatuses.length} Ramp users with non-syncable statuses (INVITE_PENDING, INVITE_EXPIRED, USER_ONBOARDING)`,
+      );
+    }
+
     const activeUsers = users.filter((u) => u.status === 'USER_ACTIVE');
     const inactiveUsers = users.filter((u) => u.status === 'USER_INACTIVE');
 
@@ -1053,7 +1223,7 @@ export class SyncController {
           | 'reactivated'
           | 'error';
         reason?: string;
-        rampStatus?: RampUser['status'] | 'USER_MISSING';
+        rampStatus?: RampUserStatus | 'USER_MISSING';
       }>,
     };
 
@@ -1064,37 +1234,45 @@ export class SyncController {
       }
 
       try {
-        const existingUser = await db.user.findUnique({
-          where: { email: normalizedEmail },
-        });
+        // Try external ID match first (handles email changes)
+        let existingMember = rampUser.id
+          ? await db.member.findFirst({
+              where: {
+                organizationId,
+                externalUserId: rampUser.id,
+                externalUserSource: 'ramp',
+              },
+            })
+          : null;
 
-        let userId: string;
-
-        if (existingUser) {
-          userId = existingUser.id;
-        } else {
-          const displayName =
-            `${rampUser.first_name ?? ''} ${rampUser.last_name ?? ''}`.trim() ||
-            normalizedEmail.split('@')[0];
-
-          const newUser = await db.user.create({
-            data: {
-              email: normalizedEmail,
-              name: displayName,
-              emailVerified: true,
-            },
+        // Fall back to email match
+        if (!existingMember) {
+          const existingUser = await db.user.findUnique({
+            where: { email: normalizedEmail },
           });
-          userId = newUser.id;
+          if (existingUser) {
+            existingMember = await db.member.findFirst({
+              where: { organizationId, userId: existingUser.id },
+            });
+          }
         }
 
-        const existingMember = await db.member.findFirst({
-          where: {
-            organizationId,
-            userId,
-          },
-        });
-
         if (existingMember) {
+          // Backfill external ID if not set
+          if (
+            rampUser.id &&
+            (!existingMember.externalUserId ||
+              existingMember.externalUserSource !== 'ramp')
+          ) {
+            await db.member.update({
+              where: { id: existingMember.id },
+              data: {
+                externalUserId: rampUser.id,
+                externalUserSource: 'ramp',
+              },
+            });
+          }
+
           if (existingMember.deactivated) {
             await db.member.update({
               where: { id: existingMember.id },
@@ -1117,12 +1295,33 @@ export class SyncController {
           continue;
         }
 
+        // Create new user if needed
+        let existingUser = await db.user.findUnique({
+          where: { email: normalizedEmail },
+        });
+
+        if (!existingUser) {
+          const displayName =
+            `${rampUser.first_name ?? ''} ${rampUser.last_name ?? ''}`.trim() ||
+            normalizedEmail.split('@')[0];
+
+          existingUser = await db.user.create({
+            data: {
+              email: normalizedEmail,
+              name: displayName,
+              emailVerified: true,
+            },
+          });
+        }
+
         await db.member.create({
           data: {
             organizationId,
-            userId,
+            userId: existingUser.id,
             role: 'employee',
             isActive: true,
+            externalUserId: rampUser.id || null,
+            externalUserSource: rampUser.id ? 'ramp' : null,
           },
         });
 
@@ -1166,11 +1365,23 @@ export class SyncController {
         continue;
       }
 
+      // Safety guard: never auto-deactivate privileged members via sync
+      const memberRoles = member.role
+        .split(',')
+        .map((r) => r.trim().toLowerCase());
+      if (
+        memberRoles.includes('owner') ||
+        memberRoles.includes('admin') ||
+        memberRoles.includes('auditor')
+      ) {
+        continue;
+      }
+
       const isSuspended = suspendedEmails.has(memberEmail);
       const isInactive = inactiveEmails.has(memberEmail);
       const isRemoved =
         !activeEmails.has(memberEmail) && !isSuspended && !isInactive;
-      const rampStatus: RampUser['status'] | 'USER_MISSING' = isSuspended
+      const rampStatus: RampUserStatus | 'USER_MISSING' = isSuspended
         ? 'USER_SUSPENDED'
         : isInactive
           ? 'USER_INACTIVE'
@@ -1221,12 +1432,14 @@ export class SyncController {
    * Sync employees from JumpCloud
    */
   @Post('jumpcloud/employees')
-  async syncJumpCloudEmployees(@Query() query: SyncQuery) {
-    const { organizationId, connectionId } = query;
-
-    if (!organizationId || !connectionId) {
+  @RequirePermission('integration', 'update')
+  async syncJumpCloudEmployees(
+    @OrganizationId() organizationId: string,
+    @Query('connectionId') connectionId: string,
+  ) {
+    if (!connectionId) {
       throw new HttpException(
-        'organizationId and connectionId are required',
+        'connectionId is required',
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -1385,6 +1598,25 @@ export class SyncController {
       );
     }
 
+    const syncVariables = (connection.variables || {}) as Record<
+      string,
+      unknown
+    >;
+    const excludedTerms = parseSyncFilterTerms(
+      syncVariables.sync_excluded_emails,
+    );
+    const filteredUsers =
+      excludedTerms.length === 0
+        ? users
+        : users.filter(
+            (user) =>
+              !matchesSyncFilterTerms(user.email.toLowerCase(), excludedTerms),
+          );
+
+    this.logger.log(
+      `JumpCloud sync excluded filter kept ${filteredUsers.length}/${users.length} users`,
+    );
+
     // Fetch all systems from JumpCloud
     const systems: JumpCloudSystem[] = [];
     try {
@@ -1437,7 +1669,7 @@ export class SyncController {
     // Fetch user-to-system bindings for each user
     const userDevices = new Map<string, JumpCloudSystem[]>();
 
-    for (const user of users) {
+    for (const user of filteredUsers) {
       try {
         const bindingsUrl = new URL(
           `https://console.jumpcloud.com/api/v2/users/${user._id}/systems`,
@@ -1476,18 +1708,27 @@ export class SyncController {
     };
 
     // Filter to active users (exclude staged and suspended)
-    const activeUsers = users.filter(
+    const allActiveUsers = users.filter(
       (u) => u.state === 'ACTIVATED' && u.activated && !u.suspended,
     );
+    const activeUsers =
+      excludedTerms.length === 0
+        ? allActiveUsers
+        : allActiveUsers.filter(
+            (user) =>
+              !matchesSyncFilterTerms(user.email.toLowerCase(), excludedTerms),
+          );
     const suspendedEmails = new Set(
       users
         .filter((u) => u.suspended || u.state === 'SUSPENDED')
         .map((u) => u.email.toLowerCase()),
     );
-    const activeEmails = new Set(activeUsers.map((u) => u.email.toLowerCase()));
+    const activeEmails = new Set(
+      allActiveUsers.map((u) => u.email.toLowerCase()),
+    );
 
     this.logger.log(
-      `Found ${activeUsers.length} active users and ${suspendedEmails.size} suspended users in JumpCloud`,
+      `Found ${activeUsers.length} active users to sync (${allActiveUsers.length} total active before exclusions) and ${suspendedEmails.size} suspended users in JumpCloud`,
     );
 
     // Import users into the organization
@@ -1641,9 +1882,22 @@ export class SyncController {
     for (const member of allOrgMembers) {
       const memberEmail = member.user.email.toLowerCase();
       const memberDomain = memberEmail.split('@')[1];
+      const memberRoles = member.role
+        .split(',')
+        .map((role) => role.trim().toLowerCase());
 
       // Only check members whose email domain matches the JumpCloud domain
       if (!memberDomain || !jcDomains.has(memberDomain)) {
+        continue;
+      }
+
+      // Safety guard: never auto-deactivate privileged members via sync.
+      // This prevents org lockouts when identity data is partial/misaligned.
+      if (
+        memberRoles.includes('owner') ||
+        memberRoles.includes('admin') ||
+        memberRoles.includes('auditor')
+      ) {
         continue;
       }
 
@@ -1688,13 +1942,8 @@ export class SyncController {
    * Check if JumpCloud is connected for an organization
    */
   @Post('jumpcloud/status')
-  async getJumpCloudStatus(@Query('organizationId') organizationId: string) {
-    if (!organizationId) {
-      throw new HttpException(
-        'organizationId is required',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
+  @RequirePermission('integration', 'read')
+  async getJumpCloudStatus(@OrganizationId() organizationId: string) {
 
     const connection = await this.connectionRepository.findBySlugAndOrg(
       'jumpcloud',
@@ -1722,13 +1971,8 @@ export class SyncController {
    * Check if Ramp is connected for an organization
    */
   @Post('ramp/status')
-  async getRampStatus(@Query('organizationId') organizationId: string) {
-    if (!organizationId) {
-      throw new HttpException(
-        'organizationId is required',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
+  @RequirePermission('integration', 'read')
+  async getRampStatus(@OrganizationId() organizationId: string) {
 
     const connection = await this.connectionRepository.findBySlugAndOrg(
       'ramp',
@@ -1756,15 +2000,10 @@ export class SyncController {
    * Get the current employee sync provider for an organization
    */
   @Get('employee-sync-provider')
+  @RequirePermission('integration', 'read')
   async getEmployeeSyncProvider(
-    @Query('organizationId') organizationId: string,
+    @OrganizationId() organizationId: string,
   ) {
-    if (!organizationId) {
-      throw new HttpException(
-        'organizationId is required',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
 
     const org = await db.organization.findUnique({
       where: { id: organizationId },
@@ -1784,16 +2023,11 @@ export class SyncController {
    * Set the employee sync provider for an organization
    */
   @Post('employee-sync-provider')
+  @RequirePermission('integration', 'update')
   async setEmployeeSyncProvider(
-    @Query('organizationId') organizationId: string,
+    @OrganizationId() organizationId: string,
     @Body() body: { provider: string | null },
   ) {
-    if (!organizationId) {
-      throw new HttpException(
-        'organizationId is required',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
 
     const { provider } = body;
 

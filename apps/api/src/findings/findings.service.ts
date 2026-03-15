@@ -5,20 +5,87 @@ import {
   ForbiddenException,
   Logger,
 } from '@nestjs/common';
-import { db, FindingStatus, FindingType } from '@trycompai/db';
+import {
+  db,
+  EvidenceFormType as DbEvidenceFormType,
+  FindingStatus,
+  FindingType,
+} from '@trycompai/db';
+import {
+  toDbEvidenceFormType,
+  toExternalEvidenceFormType,
+} from '@comp/company';
 import { CreateFindingDto } from './dto/create-finding.dto';
 import { UpdateFindingDto } from './dto/update-finding.dto';
 import { FindingAuditService } from './finding-audit.service';
 import { FindingNotifierService } from './finding-notifier.service';
+import { type EvidenceFormType } from '@/evidence-forms/evidence-forms.definitions';
 
 @Injectable()
 export class FindingsService {
   private readonly logger = new Logger(FindingsService.name);
+  private readonly findingInclude = {
+    createdBy: {
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            image: true,
+          },
+        },
+      },
+    },
+    template: {
+      select: {
+        id: true,
+        category: true,
+        title: true,
+      },
+    },
+    task: {
+      select: {
+        id: true,
+        title: true,
+      },
+    },
+    evidenceSubmission: {
+      select: {
+        id: true,
+        formType: true,
+        submittedAt: true,
+        submittedById: true,
+      },
+    },
+  };
 
   constructor(
     private readonly findingAuditService: FindingAuditService,
     private readonly findingNotifierService: FindingNotifierService,
   ) {}
+
+  private normalizeFindingFormTypes<
+    T extends {
+      evidenceFormType: DbEvidenceFormType | null;
+      evidenceSubmission?: {
+        formType: DbEvidenceFormType;
+      } | null;
+    },
+  >(finding: T) {
+    return {
+      ...finding,
+      evidenceFormType: toExternalEvidenceFormType(finding.evidenceFormType),
+      evidenceSubmission: finding.evidenceSubmission
+        ? {
+            ...finding.evidenceSubmission,
+            formType:
+              toExternalEvidenceFormType(finding.evidenceSubmission.formType) ??
+              'meeting',
+          }
+        : null,
+    };
+  }
 
   /**
    * Get all findings for a specific task
@@ -37,33 +104,7 @@ export class FindingsService {
 
     const findings = await db.finding.findMany({
       where: { taskId, organizationId },
-      include: {
-        createdBy: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                image: true,
-              },
-            },
-          },
-        },
-        template: {
-          select: {
-            id: true,
-            category: true,
-            title: true,
-          },
-        },
-        task: {
-          select: {
-            id: true,
-            title: true,
-          },
-        },
-      },
+      include: this.findingInclude,
       orderBy: [
         // Sort by status: open first, then ready_for_review, needs_revision, closed
         { status: 'asc' },
@@ -71,10 +112,59 @@ export class FindingsService {
       ],
     });
 
+    this.logger.log(`Retrieved ${findings.length} findings for task ${taskId}`);
+    return findings.map((finding) => this.normalizeFindingFormTypes(finding));
+  }
+
+  /**
+   * Get all findings for a specific evidence submission
+   */
+  async findByEvidenceSubmissionId(
+    organizationId: string,
+    evidenceSubmissionId: string,
+  ) {
+    const submission = await db.evidenceSubmission.findFirst({
+      where: { id: evidenceSubmissionId, organizationId },
+    });
+
+    if (!submission) {
+      throw new NotFoundException(
+        `Evidence submission with ID ${evidenceSubmissionId} not found in organization`,
+      );
+    }
+
+    const findings = await db.finding.findMany({
+      where: { evidenceSubmissionId, organizationId },
+      include: this.findingInclude,
+      orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
+    });
+
     this.logger.log(
-      `Retrieved ${findings.length} findings for task ${taskId}`,
+      `Retrieved ${findings.length} findings for evidence submission ${evidenceSubmissionId}`,
     );
-    return findings;
+    return findings.map((finding) => this.normalizeFindingFormTypes(finding));
+  }
+
+  /**
+   * Get all findings for a specific evidence form type
+   */
+  async findByEvidenceFormType(
+    organizationId: string,
+    evidenceFormType: EvidenceFormType,
+  ) {
+    const findings = await db.finding.findMany({
+      where: {
+        evidenceFormType: toDbEvidenceFormType(evidenceFormType),
+        organizationId,
+      },
+      include: this.findingInclude,
+      orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
+    });
+
+    this.logger.log(
+      `Retrieved ${findings.length} findings for evidence form type ${evidenceFormType}`,
+    );
+    return findings.map((finding) => this.normalizeFindingFormTypes(finding));
   }
 
   /**
@@ -86,40 +176,14 @@ export class FindingsService {
         organizationId,
         ...(status && { status }),
       },
-      include: {
-        createdBy: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                image: true,
-              },
-            },
-          },
-        },
-        template: {
-          select: {
-            id: true,
-            category: true,
-            title: true,
-          },
-        },
-        task: {
-          select: {
-            id: true,
-            title: true,
-          },
-        },
-      },
+      include: this.findingInclude,
       orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
     });
 
     this.logger.log(
       `Retrieved ${findings.length} findings for organization ${organizationId}`,
     );
-    return findings;
+    return findings.map((finding) => this.normalizeFindingFormTypes(finding));
   }
 
   /**
@@ -128,33 +192,7 @@ export class FindingsService {
   async findById(organizationId: string, findingId: string) {
     const finding = await db.finding.findFirst({
       where: { id: findingId, organizationId },
-      include: {
-        createdBy: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                image: true,
-              },
-            },
-          },
-        },
-        template: {
-          select: {
-            id: true,
-            category: true,
-            title: true,
-          },
-        },
-        task: {
-          select: {
-            id: true,
-            title: true,
-          },
-        },
-      },
+      include: this.findingInclude,
     });
 
     if (!finding) {
@@ -163,7 +201,7 @@ export class FindingsService {
       );
     }
 
-    return finding;
+    return this.normalizeFindingFormTypes(finding);
   }
 
   /**
@@ -175,15 +213,65 @@ export class FindingsService {
     userId: string,
     createDto: CreateFindingDto,
   ) {
-    // Verify task belongs to organization
-    const task = await db.task.findFirst({
-      where: { id: createDto.taskId, organizationId },
-    });
+    const hasTaskTarget = Boolean(createDto.taskId);
+    const hasSubmissionTarget = Boolean(createDto.evidenceSubmissionId);
+    const hasFormTypeTarget = Boolean(createDto.evidenceFormType);
+    const targetCount =
+      (hasTaskTarget ? 1 : 0) +
+      (hasSubmissionTarget ? 1 : 0) +
+      (hasFormTypeTarget ? 1 : 0);
 
-    if (!task) {
-      throw new NotFoundException(
-        `Task with ID ${createDto.taskId} not found in organization`,
+    if (targetCount === 0) {
+      throw new BadRequestException(
+        'One of taskId, evidenceSubmissionId, or evidenceFormType is required',
       );
+    }
+    if (targetCount > 1) {
+      throw new BadRequestException(
+        'Provide only one target: taskId, evidenceSubmissionId, or evidenceFormType',
+      );
+    }
+
+    let task: {
+      id: string;
+      title: string;
+    } | null = null;
+    let evidenceSubmission: {
+      id: string;
+      formType: DbEvidenceFormType;
+      submittedAt: Date;
+      submittedById: string | null;
+    } | null = null;
+
+    if (createDto.taskId) {
+      task = await db.task.findFirst({
+        where: { id: createDto.taskId, organizationId },
+        select: { id: true, title: true },
+      });
+
+      if (!task) {
+        throw new NotFoundException(
+          `Task with ID ${createDto.taskId} not found in organization`,
+        );
+      }
+    }
+
+    if (createDto.evidenceSubmissionId) {
+      evidenceSubmission = await db.evidenceSubmission.findFirst({
+        where: { id: createDto.evidenceSubmissionId, organizationId },
+        select: {
+          id: true,
+          formType: true,
+          submittedAt: true,
+          submittedById: true,
+        },
+      });
+
+      if (!evidenceSubmission) {
+        throw new NotFoundException(
+          `Evidence submission with ID ${createDto.evidenceSubmissionId} not found in organization`,
+        );
+      }
     }
 
     // Verify template exists if provided
@@ -199,9 +287,18 @@ export class FindingsService {
       }
     }
 
+    const resolvedFormType =
+      createDto.evidenceFormType ??
+      toExternalEvidenceFormType(evidenceSubmission?.formType) ??
+      undefined;
+
     const finding = await db.finding.create({
       data: {
-        taskId: createDto.taskId,
+        taskId: createDto.taskId ?? null,
+        evidenceSubmissionId: createDto.evidenceSubmissionId ?? null,
+        evidenceFormType: createDto.evidenceFormType
+          ? toDbEvidenceFormType(createDto.evidenceFormType)
+          : null,
         type: createDto.type,
         content: createDto.content,
         templateId: createDto.templateId,
@@ -209,33 +306,7 @@ export class FindingsService {
         organizationId,
         status: FindingStatus.open,
       },
-      include: {
-        createdBy: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                name: true,
-                email: true,
-                image: true,
-              },
-            },
-          },
-        },
-        template: {
-          select: {
-            id: true,
-            category: true,
-            title: true,
-          },
-        },
-        task: {
-          select: {
-            id: true,
-            title: true,
-          },
-        },
-      },
+      include: this.findingInclude,
     });
 
     // Log to audit trail
@@ -244,8 +315,10 @@ export class FindingsService {
       organizationId,
       userId,
       memberId,
-      taskId: createDto.taskId,
-      taskTitle: task.title,
+      taskId: task?.id,
+      taskTitle: task?.title,
+      evidenceSubmissionId: evidenceSubmission?.id,
+      evidenceSubmissionFormType: resolvedFormType,
       content: createDto.content,
       type: createDto.type ?? FindingType.soc2,
     });
@@ -258,18 +331,24 @@ export class FindingsService {
     void this.findingNotifierService.notifyFindingCreated({
       organizationId,
       findingId: finding.id,
-      taskId: createDto.taskId,
-      taskTitle: task.title,
+      taskId: task?.id,
+      taskTitle: task?.title,
+      evidenceSubmissionId: evidenceSubmission?.id,
+      evidenceSubmissionFormType: resolvedFormType,
+      evidenceSubmissionSubmittedById: evidenceSubmission?.submittedById,
       findingContent: createDto.content,
       findingType: createDto.type ?? FindingType.soc2,
       actorUserId: userId,
       actorName,
     });
 
-    this.logger.log(
-      `Created finding ${finding.id} for task ${createDto.taskId}`,
-    );
-    return finding;
+    const target = task
+      ? `task ${task.id}`
+      : createDto.evidenceFormType
+        ? `evidence form type ${createDto.evidenceFormType}`
+        : `evidence submission ${evidenceSubmission?.id}`;
+    this.logger.log(`Created finding ${finding.id} for ${target}`);
+    return this.normalizeFindingFormTypes(finding);
   }
 
   /**
@@ -290,8 +369,8 @@ export class FindingsService {
   ) {
     // Verify finding exists and get current state for audit
     const finding = await this.findById(organizationId, findingId);
-    const previousStatus = finding.status as FindingStatus;
-    const previousType = finding.type as FindingType;
+    const previousStatus = finding.status;
+    const previousType = finding.type;
     const previousContent = finding.content;
 
     // Validate status transition permissions
@@ -311,11 +390,29 @@ export class FindingsService {
       }
 
       // ready_for_review can only be set by non-auditor admins/owners (client signals to auditor)
-      if (updateDto.status === FindingStatus.ready_for_review && isAuditor && !isPlatformAdmin) {
+      if (
+        updateDto.status === FindingStatus.ready_for_review &&
+        isAuditor &&
+        !isPlatformAdmin
+      ) {
         throw new ForbiddenException(
           `Auditors cannot set status to 'ready_for_review'. This status is for clients to signal readiness.`,
         );
       }
+    }
+
+    // Handle revisionNote logic:
+    // - Set revisionNote when status is needs_revision and a note is provided
+    // - Clear revisionNote when status changes to anything other than needs_revision
+    let revisionNoteUpdate: { revisionNote?: string | null } = {};
+    if (updateDto.status === FindingStatus.needs_revision) {
+      // Set revision note if provided (can be null to clear)
+      if (updateDto.revisionNote !== undefined) {
+        revisionNoteUpdate = { revisionNote: updateDto.revisionNote || null };
+      }
+    } else if (updateDto.status !== undefined) {
+      // Clear revision note when moving to a different status
+      revisionNoteUpdate = { revisionNote: null };
     }
 
     const updatedFinding = await db.finding.update({
@@ -324,6 +421,7 @@ export class FindingsService {
         ...(updateDto.status !== undefined && { status: updateDto.status }),
         ...(updateDto.type !== undefined && { type: updateDto.type }),
         ...(updateDto.content !== undefined && { content: updateDto.content }),
+        ...revisionNoteUpdate,
       },
       include: {
         createdBy: {
@@ -401,32 +499,49 @@ export class FindingsService {
       const notificationParams = {
         organizationId,
         findingId,
-        taskId: finding.taskId,
-        taskTitle: finding.task.title,
+        taskId: finding.task?.id,
+        taskTitle: finding.task?.title,
+        evidenceSubmissionId: finding.evidenceSubmission?.id,
+        evidenceSubmissionFormType:
+          finding.evidenceFormType ?? finding.evidenceSubmission?.formType,
+        evidenceSubmissionSubmittedById:
+          finding.evidenceSubmission?.submittedById,
         findingContent: updatedFinding.content,
-        findingType: updatedFinding.type as FindingType,
+        findingType: updatedFinding.type,
         actorUserId: userId,
         actorName,
       };
 
       switch (updateDto.status) {
         case FindingStatus.ready_for_review:
-          this.logger.log(`Triggering 'ready_for_review' notification for finding ${findingId}`);
+          this.logger.log(
+            `Triggering 'ready_for_review' notification for finding ${findingId}`,
+          );
           void this.findingNotifierService.notifyReadyForReview({
             ...notificationParams,
             findingCreatorMemberId: finding.createdById,
           });
           break;
         case FindingStatus.needs_revision:
-          this.logger.log(`Triggering 'needs_revision' notification for finding ${findingId}`);
-          void this.findingNotifierService.notifyNeedsRevision(notificationParams);
+          this.logger.log(
+            `Triggering 'needs_revision' notification for finding ${findingId}`,
+          );
+          void this.findingNotifierService.notifyNeedsRevision(
+            notificationParams,
+          );
           break;
         case FindingStatus.closed:
-          this.logger.log(`Triggering 'closed' notification for finding ${findingId}`);
-          void this.findingNotifierService.notifyFindingClosed(notificationParams);
+          this.logger.log(
+            `Triggering 'closed' notification for finding ${findingId}`,
+          );
+          void this.findingNotifierService.notifyFindingClosed(
+            notificationParams,
+          );
           break;
         case FindingStatus.open:
-          this.logger.log(`Status changed to 'open' for finding ${findingId}. No notification sent.`);
+          this.logger.log(
+            `Status changed to 'open' for finding ${findingId}. No notification sent.`,
+          );
           break;
         default:
           this.logger.warn(
@@ -442,7 +557,7 @@ export class FindingsService {
     this.logger.log(
       `Updated finding ${findingId}: status=${updatedFinding.status}`,
     );
-    return updatedFinding;
+    return this.normalizeFindingFormTypes(updatedFinding);
   }
 
   /**
@@ -467,17 +582,21 @@ export class FindingsService {
       organizationId,
       userId,
       memberId,
-      taskId: finding.taskId,
-      taskTitle: finding.task.title,
+      taskId: finding.task?.id,
+      taskTitle: finding.task?.title,
+      evidenceSubmissionId: finding.evidenceSubmission?.id,
+      evidenceSubmissionFormType:
+        finding.evidenceFormType ?? finding.evidenceSubmission?.formType,
       content: finding.content,
     });
 
-    this.logger.log(`Deleted finding ${findingId} from task ${finding.taskId}`);
+    this.logger.log(`Deleted finding ${findingId}`);
     return {
       message: 'Finding deleted successfully',
       deletedFinding: {
         id: finding.id,
         taskId: finding.taskId,
+        evidenceSubmissionId: finding.evidenceSubmissionId,
       },
     };
   }
@@ -489,6 +608,9 @@ export class FindingsService {
     // Verify finding exists
     await this.findById(organizationId, findingId);
 
-    return this.findingAuditService.getFindingActivity(findingId, organizationId);
+    return this.findingAuditService.getFindingActivity(
+      findingId,
+      organizationId,
+    );
   }
 }

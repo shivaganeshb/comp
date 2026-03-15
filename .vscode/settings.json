@@ -25,5 +25,6 @@
     "editor.defaultFormatter": "esbenp.prettier-vscode"
   },
   "typescript.tsserver.experimental.enableProjectDiagnostics": true,
-  "snyk.advanced.autoSelectOrganization": true
+  "snyk.advanced.autoSelectOrganization": true,
+  "snyk.advanced.organization": "0a0254e4-6e17-4b29-9d46-40cdb7ddf05e"
 }

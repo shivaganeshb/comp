@@ -1,6 +1,7 @@
 'use client';
 
 import { useComments, useCommentWithAttachments } from '@/hooks/use-comments-api';
+import { useMentionableMembers } from '@/hooks/use-mentionable-members';
 import { Button } from '@comp/ui/button';
 import {
   Dialog,
@@ -11,24 +12,24 @@ import {
   DialogTitle,
 } from '@comp/ui/dialog';
 import type { CommentEntityType } from '@db';
+import type { JSONContent } from '@tiptap/react';
 import { Camera, FileIcon, Loader2, Paperclip, X } from 'lucide-react';
+import { useParams, usePathname } from 'next/navigation';
 import type React from 'react';
 import { useCallback, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import type { JSONContent } from '@tiptap/react';
 import { CommentRichTextField } from './CommentRichTextField';
-import { useOrganizationMembers } from '@/hooks/use-organization-members';
-import { useMemo } from 'react';
-import { useParams, usePathname } from 'next/navigation';
 
 interface CommentFormProps {
   entityId: string;
   entityType: CommentEntityType;
+  /** Resource to check for mention filtering. Defaults to entityType. */
+  mentionResource?: string;
   /** Optional org override; otherwise uses `orgId` from URL params */
   organizationId?: string;
 }
 
-export function CommentForm({ entityId, entityType, organizationId }: CommentFormProps) {
+export function CommentForm({ entityId, entityType, mentionResource, organizationId }: CommentFormProps) {
   const [newComment, setNewComment] = useState<JSONContent | null>(null);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -53,64 +54,50 @@ export function CommentForm({ entityId, entityType, organizationId }: CommentFor
     enabled: Boolean(resolvedOrgId),
   });
   const { createCommentWithFiles } = useCommentWithAttachments();
-  const { members } = useOrganizationMembers();
-
-  // Convert members to MentionUser format - only show admin/owner users
-  const mentionMembers = useMemo(() => {
-    if (!members) return [];
-    return members
-      .filter((member) => {
-        if (!member.role) return false;
-        const roles = member.role.split(',').map((r) => r.trim().toLowerCase());
-        return roles.includes('owner') || roles.includes('admin');
-      })
-      .map((member) => ({
-        id: member.user.id,
-        name: member.user.name || member.user.email || 'Unknown',
-        email: member.user.email || '',
-        image: member.user.image,
-      }));
-  }, [members]);
+  const { members: mentionMembers } = useMentionableMembers(mentionResource ?? entityType);
 
   const triggerFileInput = () => {
     fileInputRef.current?.click();
   };
 
-  const handleFileSelect = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files;
-    if (!files || files.length === 0) return;
+  const handleFileSelect = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const files = event.target.files;
+      if (!files || files.length === 0) return;
 
-    const newFiles = Array.from(files);
+      const newFiles = Array.from(files);
 
-    // Validate file sizes
-    const MAX_FILE_SIZE_MB = 100;
-    const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+      // Validate file sizes
+      const MAX_FILE_SIZE_MB = 100;
+      const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
-    for (const file of newFiles) {
-      if (file.size > MAX_FILE_SIZE_BYTES) {
-        toast.error(`File "${file.name}" exceeds the ${MAX_FILE_SIZE_MB}MB limit.`);
+      for (const file of newFiles) {
+        if (file.size > MAX_FILE_SIZE_BYTES) {
+          toast.error(`File "${file.name}" exceeds the ${MAX_FILE_SIZE_MB}MB limit.`);
+          if (fileInputRef.current) fileInputRef.current.value = '';
+          return;
+        }
+      }
+
+      // Skip modal if we're on risks or vendors pages - directly add files
+      const isRiskPage = pathname?.includes('/risk/');
+      const isVendorPage = pathname?.includes('/vendors/');
+
+      if (isRiskPage || isVendorPage) {
+        setPendingFiles((prev) => [...prev, ...newFiles]);
+        newFiles.forEach((file) => {
+          toast.success(`File "${file.name}" ready for attachment.`);
+        });
         if (fileInputRef.current) fileInputRef.current.value = '';
         return;
       }
-    }
 
-    // Skip modal if we're on risks or vendors pages - directly add files
-    const isRiskPage = pathname?.includes('/risk/');
-    const isVendorPage = pathname?.includes('/vendors/');
-    
-    if (isRiskPage || isVendorPage) {
-      setPendingFiles((prev) => [...prev, ...newFiles]);
-      newFiles.forEach((file) => {
-        toast.success(`File "${file.name}" ready for attachment.`);
-      });
-      if (fileInputRef.current) fileInputRef.current.value = '';
-      return;
-    }
-
-    // Show modal for policies and other pages
-    setFilesToAdd(newFiles);
-    setShowReminderDialog(true);
-  }, [entityType, pathname]);
+      // Show modal for policies and other pages
+      setFilesToAdd(newFiles);
+      setShowReminderDialog(true);
+    },
+    [entityType, pathname],
+  );
 
   const handleReminderConfirm = useCallback(() => {
     setShowReminderDialog(false);
@@ -138,19 +125,19 @@ export function CommentForm({ entityId, entityType, organizationId }: CommentFor
   // Convert TipTap JSON to string for API
   const getCommentText = useCallback((content: JSONContent | null): string => {
     if (!content) return '';
-    
+
     // If it's a valid TipTap doc, convert to JSON string
     if (content.type === 'doc' && content.content) {
       return JSON.stringify(content);
     }
-    
+
     return '';
   }, []);
 
   // Check if comment has content
   const hasContent = useCallback((content: JSONContent | null): boolean => {
     if (!content || !content.content) return false;
-    
+
     // Check if there's any text content
     const hasText = content.content.some((node) => {
       if (node.type === 'paragraph' && node.content) {
@@ -163,7 +150,7 @@ export function CommentForm({ entityId, entityType, organizationId }: CommentFor
       if (node.type === 'mention') return true;
       return false;
     });
-    
+
     return hasText;
   }, []);
 
@@ -193,7 +180,6 @@ export function CommentForm({ entityId, entityType, organizationId }: CommentFor
     }
   };
 
-
   return (
     <div className="rounded-lg border border-border bg-muted/10">
       <div className="flex items-start gap-3">
@@ -211,7 +197,7 @@ export function CommentForm({ entityId, entityType, organizationId }: CommentFor
             onChange={setNewComment}
             members={mentionMembers}
             disabled={isSubmitting}
-            placeholder="Leave a comment... Mention users with @"
+            placeholder="Leave a comment (mention users with @)"
             onMentionSelect={() => setIsSelectingMention(true)}
           />
 

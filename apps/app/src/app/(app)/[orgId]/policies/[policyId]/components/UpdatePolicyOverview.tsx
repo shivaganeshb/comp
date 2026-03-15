@@ -1,10 +1,15 @@
 'use client';
 
-import { submitPolicyForApprovalAction } from '@/actions/policies/submit-policy-for-approval-action';
-import { updatePolicyFormAction } from '@/actions/policies/update-policy-form-action';
 import { SelectAssignee } from '@/components/SelectAssignee';
-import { StatusIndicator } from '@/components/status-indicator';
-import { Departments, Frequency, Member, type Policy, PolicyStatus, User } from '@db';
+import {
+  Departments,
+  Frequency,
+  Member,
+  PolicyStatus,
+  User,
+  type Policy,
+  type PolicyVersion,
+} from '@db';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -31,15 +36,19 @@ import {
 } from '@trycompai/design-system';
 import { Calendar } from '@trycompai/design-system/icons';
 import { format } from 'date-fns';
-import { useAction } from 'next-safe-action/hooks';
-import { useState } from 'react';
+import { useParams } from 'next/navigation';
+import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import { SubmitApprovalDialog } from './SubmitApprovalDialog';
+import { usePolicy } from '../hooks/usePolicy';
+import { usePermissions } from '@/hooks/use-permissions';
+
+type PolicyWithVersion = Policy & {
+  currentVersion?: (PolicyVersion & { publishedBy: (Member & { user: User }) | null }) | null;
+  approver: (Member & { user: User }) | null;
+};
 
 interface UpdatePolicyOverviewProps {
-  policy: Policy & {
-    approver: (Member & { user: User }) | null;
-  };
+  policy: PolicyWithVersion;
   assignees: (Member & { user: User })[];
   isPendingApproval: boolean;
   onMutate?: () => void;
@@ -51,10 +60,14 @@ export function UpdatePolicyOverview({
   isPendingApproval,
   onMutate,
 }: UpdatePolicyOverviewProps) {
-  const [isApprovalDialogOpen, setIsApprovalDialogOpen] = useState(false);
+  const { orgId } = useParams<{ orgId: string }>();
+  const { updatePolicy } = usePolicy({
+    policyId: policy.id,
+    organizationId: orgId,
+  });
+
   const [isStatusChangeDialogOpen, setIsStatusChangeDialogOpen] = useState(false);
   const [pendingChanges, setPendingChanges] = useState<{
-    status: { from: PolicyStatus; to: PolicyStatus } | null;
     assigneeId: { from: string | null; to: string | null } | null;
     department: { from: Departments | null; to: Departments } | null;
     reviewFrequency: { from: Frequency | null; to: Frequency } | null;
@@ -63,12 +76,13 @@ export function UpdatePolicyOverview({
       assigneeId: string | null;
       department: Departments;
       reviewFrequency: Frequency;
-      reviewDate: Date;
     };
   } | null>(null);
-  const [selectedApproverId, setSelectedApproverId] = useState<string | null>(null);
 
-  const [selectedStatus, setSelectedStatus] = useState<PolicyStatus>(policy.status);
+  // Display the current policy status from the database
+  // This always reflects the actual status stored in the Policy table
+  const displayStatus = policy.status ?? PolicyStatus.draft;
+  
   const [selectedAssigneeId, setSelectedAssigneeId] = useState<string | null>(policy.assigneeId);
   const [selectedDepartment, setSelectedDepartment] = useState<Departments>(
     policy.department || Departments.admin,
@@ -77,160 +91,74 @@ export function UpdatePolicyOverview({
     policy.frequency || Frequency.monthly,
   );
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [formInteracted, setFormInteracted] = useState(false);
+  const { hasPermission } = usePermissions();
+  const canUpdate = hasPermission('policy', 'update');
 
-  const fieldsDisabled = isPendingApproval;
-
-  const updatePolicyForm = useAction(updatePolicyFormAction, {
-    onSuccess: () => {
-      toast.success('Policy updated successfully');
-      setIsSubmitting(false);
-      setFormInteracted(false);
-      onMutate?.();
-    },
-    onError: () => {
-      toast.error('Failed to update policy');
-      setIsSubmitting(false);
-    },
-  });
-
-  const submitForApproval = useAction(submitPolicyForApprovalAction, {
-    onSuccess: () => {
-      toast.success('Policy submitted for approval successfully!');
-      setIsSubmitting(false);
-      setIsApprovalDialogOpen(false);
-      setFormInteracted(false);
-      setSelectedStatus('needs_review');
-      onMutate?.();
-    },
-    onError: () => {
-      toast.error('Failed to submit policy for approval.');
-      setIsSubmitting(false);
-    },
-  });
-
-  const handleFormChange = () => {
-    setFormInteracted(true);
-  };
+  const fieldsDisabled = isPendingApproval || !canUpdate;
 
   const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsSubmitting(true);
 
-    const status = selectedStatus;
     const assigneeId = selectedAssigneeId;
     const department = selectedDepartment;
     const reviewFrequency = selectedFrequency;
-    const reviewDate = policy.reviewDate ? new Date(policy.reviewDate) : new Date();
 
-    // Case 1: Moving to published (from draft/needs_review) - requires approval
-    if (['draft', 'needs_review'].includes(policy.status) && status === 'published') {
-      setIsApprovalDialogOpen(true);
-      setIsSubmitting(false);
-      return;
-    }
-
-    // Case 2: Any other changes - show confirmation dialog with list of changes
-    const statusChanged = status !== policy.status;
+    // Show confirmation dialog with list of changes
     const assigneeChanged = assigneeId !== policy.assigneeId;
     const departmentChanged = department !== policy.department;
     const frequencyChanged = reviewFrequency !== policy.frequency;
 
     setPendingChanges({
-      status: statusChanged ? { from: policy.status, to: status } : null,
       assigneeId: assigneeChanged ? { from: policy.assigneeId, to: assigneeId } : null,
       department: departmentChanged ? { from: policy.department, to: department } : null,
       reviewFrequency: frequencyChanged ? { from: policy.frequency, to: reviewFrequency } : null,
-      formData: { assigneeId, department, reviewFrequency, reviewDate, status },
+      formData: { assigneeId, department, reviewFrequency, status: policy.status },
     });
     setIsStatusChangeDialogOpen(true);
     setIsSubmitting(false);
   };
 
-  const handleConfirmChanges = () => {
+  const handleConfirmChanges = async () => {
     if (!pendingChanges) return;
 
     setIsSubmitting(true);
-    updatePolicyForm.execute({
-      id: policy.id,
-      status: pendingChanges.formData.status,
-      assigneeId: pendingChanges.formData.assigneeId,
-      department: pendingChanges.formData.department,
-      review_frequency: pendingChanges.formData.reviewFrequency,
-      review_date: pendingChanges.formData.reviewDate,
-      approverId: null,
-      entityId: policy.id,
-    });
-    setIsStatusChangeDialogOpen(false);
-    setPendingChanges(null);
-  };
-
-  const handleConfirmApproval = () => {
-    if (!selectedApproverId) {
-      toast.error('Approver is required.');
-      return;
+    try {
+      await updatePolicy({
+        status: pendingChanges.formData.status,
+        assigneeId: pendingChanges.formData.assigneeId,
+        department: pendingChanges.formData.department,
+        frequency: pendingChanges.formData.reviewFrequency,
+      });
+      toast.success('Policy updated successfully');
+      onMutate?.();
+    } catch {
+      toast.error('Failed to update policy');
+    } finally {
+      setIsSubmitting(false);
+      setIsStatusChangeDialogOpen(false);
+      setPendingChanges(null);
     }
-
-    const assigneeId = selectedAssigneeId;
-    const department = selectedDepartment;
-    const reviewFrequency = selectedFrequency;
-    const reviewDate = policy.reviewDate ? new Date(policy.reviewDate) : new Date();
-
-    setIsSubmitting(true);
-    submitForApproval.execute({
-      id: policy.id,
-      status: PolicyStatus.needs_review,
-      assigneeId,
-      department,
-      review_frequency: reviewFrequency,
-      review_date: reviewDate,
-      approverId: selectedApproverId,
-      entityId: policy.id,
-    });
-    setSelectedApproverId(null);
   };
 
-  const hasFormChanges = formInteracted;
+  // Check if any form values have actually changed from their original values
+  const hasFormChanges = useMemo(() => {
+    const assigneeChanged = selectedAssigneeId !== policy.assigneeId;
+    const departmentChanged = selectedDepartment !== (policy.department || Departments.admin);
+    const frequencyChanged = selectedFrequency !== (policy.frequency || Frequency.monthly);
+    
+    return assigneeChanged || departmentChanged || frequencyChanged;
+  }, [selectedAssigneeId, selectedDepartment, selectedFrequency, policy.assigneeId, policy.department, policy.frequency]);
 
-  let buttonText = 'Save';
-  // Only show "Submit for Approval" when moving TO published from draft/needs_review
-  if (['draft', 'needs_review'].includes(policy.status) && selectedStatus === 'published') {
-    buttonText = 'Submit for Approval';
-  }
-
-  const isLoading = isSubmitting || updatePolicyForm.isExecuting || submitForApproval.isExecuting;
+  const isLoading = isSubmitting;
 
   return (
     <>
       <form id="policy-form" onSubmit={handleSubmit}>
         <Stack gap="md">
           <Grid cols={{ base: '1', md: '2' }} gap="4">
-            {/* Status Field */}
-            <Stack gap="sm">
-              <Label htmlFor="status">Status</Label>
-              <input type="hidden" name="status" id="status" value={selectedStatus} />
-              <Select
-                value={selectedStatus}
-                disabled={fieldsDisabled}
-                onValueChange={(value) => {
-                  setSelectedStatus(value as PolicyStatus);
-                  handleFormChange();
-                }}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select status">
-                    <StatusIndicator status={selectedStatus} />
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {Object.values(PolicyStatus).map((statusOption) => (
-                    <SelectItem key={statusOption} value={statusOption}>
-                      <StatusIndicator status={statusOption} />
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Stack>
+            {/* Hidden status field for form submission */}
+            <input type="hidden" name="status" id="status" value={displayStatus} />
 
             {/* Review Frequency Field */}
             <Stack gap="sm">
@@ -241,7 +169,6 @@ export function UpdatePolicyOverview({
                 disabled={fieldsDisabled}
                 onValueChange={(value) => {
                   setSelectedFrequency(value as Frequency);
-                  handleFormChange();
                 }}
               >
                 <SelectTrigger>
@@ -268,18 +195,17 @@ export function UpdatePolicyOverview({
                 disabled={fieldsDisabled}
                 onValueChange={(value) => {
                   setSelectedDepartment(value as Departments);
-                  handleFormChange();
                 }}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Select department">
-                    {selectedDepartment.charAt(0).toUpperCase() + selectedDepartment.slice(1)}
+                    {selectedDepartment.toUpperCase()}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   {Object.values(Departments).map((dept) => (
                     <SelectItem key={dept} value={dept}>
-                      {dept.charAt(0).toUpperCase() + dept.slice(1)}
+                      {dept.toUpperCase()}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -293,7 +219,6 @@ export function UpdatePolicyOverview({
                 assignees={assignees}
                 onAssigneeChange={(id) => {
                   setSelectedAssigneeId(id);
-                  handleFormChange();
                 }}
                 assigneeId={selectedAssigneeId || ''}
                 disabled={fieldsDisabled}
@@ -307,7 +232,7 @@ export function UpdatePolicyOverview({
               <InputGroup>
                 <InputGroupInput
                   id="review_date_display"
-                  value={policy.reviewDate ? format(new Date(policy.reviewDate), 'PPP') : 'None'}
+                  value={policy.reviewDate ? format(new Date(policy.reviewDate), 'PPP') : 'Not set'}
                   disabled
                   readOnly
                 />
@@ -315,20 +240,10 @@ export function UpdatePolicyOverview({
                   <Calendar size={16} />
                 </InputGroupAddon>
               </InputGroup>
-              <input
-                type="hidden"
-                id="review_date"
-                name="review_date"
-                value={
-                  policy.reviewDate
-                    ? new Date(policy.reviewDate).toISOString()
-                    : new Date().toISOString()
-                }
-              />
             </Stack>
           </Grid>
 
-          {!isPendingApproval && (
+          {!isPendingApproval && canUpdate && (
             <HStack justify="end">
               <Button
                 disabled={!hasFormChanges || isLoading}
@@ -339,22 +254,12 @@ export function UpdatePolicyOverview({
                   form.requestSubmit();
                 }}
               >
-                {buttonText}
+                Save
               </Button>
             </HStack>
           )}
         </Stack>
       </form>
-
-      <SubmitApprovalDialog
-        isOpen={isApprovalDialogOpen}
-        onOpenChange={setIsApprovalDialogOpen}
-        assignees={assignees}
-        selectedApproverId={selectedApproverId}
-        onSelectedApproverIdChange={setSelectedApproverId}
-        onConfirm={handleConfirmApproval}
-        isSubmitting={isSubmitting}
-      />
 
       <AlertDialog
         open={isStatusChangeDialogOpen}
@@ -371,28 +276,6 @@ export function UpdatePolicyOverview({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <Stack gap="0">
-            {pendingChanges?.status && (
-              <HStack justify="between" align="center">
-                <Text size="sm" variant="muted">
-                  Status
-                </Text>
-                <Text size="sm">
-                  <Text as="span" size="sm" variant="muted">
-                    {pendingChanges.status.from
-                      .replace('_', ' ')
-                      .replace(/\b\w/g, (c) => c.toUpperCase())}
-                  </Text>
-                  <Text as="span" size="sm" variant="muted">
-                    {' → '}
-                  </Text>
-                  <Text as="span" size="sm" weight="medium">
-                    {pendingChanges.status.to
-                      .replace('_', ' ')
-                      .replace(/\b\w/g, (c) => c.toUpperCase())}
-                  </Text>
-                </Text>
-              </HStack>
-            )}
             {pendingChanges?.assigneeId && (
               <HStack justify="between" align="center">
                 <Text size="sm" variant="muted">
@@ -421,16 +304,14 @@ export function UpdatePolicyOverview({
                 <Text size="sm">
                   <Text as="span" size="sm" variant="muted">
                     {pendingChanges.department.from
-                      ? pendingChanges.department.from.charAt(0).toUpperCase() +
-                        pendingChanges.department.from.slice(1)
+                      ? pendingChanges.department.from.toUpperCase()
                       : ''}
                   </Text>
                   <Text as="span" size="sm" variant="muted">
                     {' → '}
                   </Text>
                   <Text as="span" size="sm" weight="medium">
-                    {pendingChanges.department.to.charAt(0).toUpperCase() +
-                      pendingChanges.department.to.slice(1)}
+                    {pendingChanges.department.to.toUpperCase()}
                   </Text>
                 </Text>
               </HStack>
